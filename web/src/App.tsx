@@ -10,8 +10,8 @@ import {
 } from "@/src/dialogs";
 import { Inspector } from "@/src/inspector";
 import {
-  defaultGuides, defaultSettings, Editor, Gallery, IdleInspector, ImportScreen, PresetManager,
-  ProductPlaceholder, Review, SettingsScreen, type AppSettings, type CompareView, type Guides,
+  defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
+  ProductPlaceholder, Review, SettingsScreen, type CompareView, type Guides, type Theme,
 } from "@/src/screens";
 import {
   backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
@@ -66,7 +66,7 @@ export function MinimaWorkspace() {
   const [scope, setScope] = useState<Scope>("selected");
   const [policy, setPolicy] = useState<DupPolicy>("skip");
   const [guides, setGuides] = useState<Guides>(defaultGuides);
-  const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [theme, setTheme] = useState<Theme>("dark");
   const [compare, setCompare] = useState(false);
   const [compareView, setCompareView] = useState<CompareView>("split");
   const [splitAt, setSplitAt] = useState(50);
@@ -228,9 +228,9 @@ export function MinimaWorkspace() {
   /* The theme choice has to reach the document, or the segmented control is a lie. */
   useEffect(() => {
     const root = document.documentElement;
-    if (settings.theme === "system") root.removeAttribute("data-theme");
-    else root.setAttribute("data-theme", settings.theme);
-  }, [settings.theme]);
+    if (theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", theme);
+  }, [theme]);
 
   useEffect(() => {
     if (!notice) return;
@@ -278,9 +278,10 @@ export function MinimaWorkspace() {
   </main>;
 
   const back = backTarget(screen, assets.length > 0);
+  const onImages = ["gallery", "editor", "review"].includes(screen);
   const zoomEnabled = screen === "editor" || screen === "gallery";
   const title = screen === "editor" ? active.name
-    : screen === "settings" ? "App Settings"
+    : screen === "settings" ? "Settings"
     : screen === "presets" ? "Presets Manager"
     : screen === "review" ? "Error Diagnostics"
     : screen === "import" ? "Drag & Drop"
@@ -289,11 +290,12 @@ export function MinimaWorkspace() {
   return <main className={`minima-app ${railOpen ? "" : "rail-collapsed"} ${inspectorOpen ? "" : "inspector-collapsed"}`}>
     <header className="topbar">
       <div className="topbar-left">
-        <span className="window-controls" aria-hidden="true"><i /><i /><i /></span>
         <Button variant="ghost" size="icon" aria-label="Toggle navigation rail" aria-pressed={railOpen} onClick={() => setRailOpen((value) => !value)}><PanelLeft /></Button>
         {back && <Button variant="ghost" size="sm" className="back-button" onClick={() => goto(back)}><ArrowLeft /> Back</Button>}
-        <Button variant="ghost" size="icon" aria-label="Undo" disabled={!canUndo} onClick={undo}><Undo2 /></Button>
-        <Button variant="ghost" size="icon" aria-label="Redo" disabled={!canRedo} onClick={redo}><Redo2 /></Button>
+        {screen === "editor" && <>
+          <Button variant="ghost" size="icon" aria-label="Undo" disabled={!canUndo} onClick={undo}><Undo2 /></Button>
+          <Button variant="ghost" size="icon" aria-label="Redo" disabled={!canRedo} onClick={redo}><Redo2 /></Button>
+        </>}
       </div>
       <div className="document-name">{title}</div>
       <div className="topbar-actions">
@@ -326,7 +328,7 @@ export function MinimaWorkspace() {
       </div>
     </aside>
 
-    <section className="workspace">
+    <section className={`workspace ${inspectorOpen && ["gallery", "editor", "review"].includes(screen) ? "" : "no-inspector"}`}>
       {screen === "import" && <ImportScreen policy={policy} onPolicy={setPolicy} onFiles={() => filesInput.current?.click()}
         onFolders={() => folderInput.current?.click()} onCloud={() => setCloudOpen(true)} onDrop={importFiles} />}
       {screen === "presets" && <PresetManager presets={presets} activeId={doc.presetId}
@@ -336,7 +338,7 @@ export function MinimaWorkspace() {
         onDuplicate={(preset) => setPresetDraft({ preset: customPreset(`${preset.label} copy`, preset, presets), mode: "create" })}
         onDelete={deletePreset}
         onShare={(preset) => touch(`${preset.label} rules copied for sharing`)} />}
-      {screen === "settings" && <SettingsScreen presets={presets} settings={settings} onSettings={setSettings} />}
+      {screen === "settings" && <SettingsScreen theme={theme} onTheme={setTheme} />}
 
       {screen === "gallery" && <Gallery assets={visible} total={assets.length} selected={selected} counts={counts} filter={filter} zoom={zoom}
         needsAttention={needsAttention} target={target} onFilter={setFilter} onChoose={chooseAsset} onOpen={openEditor}
@@ -348,18 +350,20 @@ export function MinimaWorkspace() {
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
 
-      {inspectorOpen && (["import", "presets", "settings"].includes(screen)
-        ? <IdleInspector />
-        : <Inspector doc={doc} target={target} asset={active} presets={presets} guides={guides} scope={scope}
+      {inspectorOpen && !["import", "presets", "settings"].includes(screen) && (
+        <Inspector doc={doc} target={target} asset={active} presets={presets} guides={guides} scope={scope}
             scopeCount={scoped.length} selectedCount={selected.length} totalCount={assets.length}
             compare={compare} overlay={overlay} processing={processing} progress={progress}
             onPreset={applyPreset} onDoc={setDoc} onGuides={setGuides} onScope={setScope} onOverlay={setOverlay}
             onApply={runApply} onFocus={() => { goto("editor"); setFocus(true); }} onClose={() => setInspectorOpen(false)}
             onResetGuides={() => { setGuides(defaultGuides); applyPreset(doc.presetId); }} />)}
+
     </section>
 
     <footer className="statusbar">
-      <span>{notice || (saving ? "Saving…" : "All changes saved")}{assets.length ? ` · ${selected.length} of ${assets.length} selected` : " · no images"}</span>
+      <span>{notice || (saving ? "Saving…" : "All changes saved")}
+        {onImages && assets.length ? ` · ${selected.length} of ${assets.length} selected` : ""}
+        {!assets.length ? " · no images" : ""}</span>
       <div className="status-actions">
         {needsAttention > 0 && screen !== "review" && <Button variant="ghost" size="sm" onClick={() => goto("review")}><TriangleAlert /> {needsAttention} need attention</Button>}
         <Button variant="ghost" size="sm" aria-pressed={compare} disabled={!assets.length} onClick={() => { goto("editor"); setCompare((value) => !value); }}><Columns2 /> Compare</Button>
@@ -370,7 +374,9 @@ export function MinimaWorkspace() {
         <Button variant="secondary" size="sm" disabled={processing || !scoped.length} onClick={runApply}>Apply preset</Button>
         <Button size="sm" disabled={!exportQueue.length} onClick={() => setExportOpen(true)}><Download /> Export</Button>
       </div>
-      <span>{assets.length ? `${active.src.w} × ${active.src.h} px · ${ratioLabel(doc.width, doc.height)} · ${active.format.toUpperCase()} · ${megabytes(active).toFixed(1)} MB` : ""}</span>
+      <span>{onImages && assets.length
+        ? `${active.src.w} × ${active.src.h} px · ${ratioLabel(doc.width, doc.height)} · ${active.format.toUpperCase()} · ${megabytes(active).toFixed(1)} MB`
+        : ""}</span>
     </footer>
 
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} queue={exportQueue} options={exportOptions}
