@@ -7,8 +7,11 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   CloudDialog, defaultExportOptions, ExportDialog, ExportProgress, PresetDialog, RemoveDialog,
-  ShortcutsDialog, type ExportOptions, type ExportRun,
+  ShortcutsDialog, type ExportOptions,
 } from "@/src/dialogs";
+import {
+  downloadZip, EXPORT_ZIP, runExport, specFromDoc, type ExportProgress as ExportRunProgress,
+} from "@/src/exportrun";
 import { summarise, toSources, type BatchSource } from "@/src/batch";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
@@ -72,7 +75,11 @@ export function MinimaWorkspace() {
   const [cloudOpen, setCloudOpen] = useState(false);
   const [removeIntent, setRemoveIntent] = useState<{ keepSelected: boolean; count: number } | null>(null);
   const [presetDraft, setPresetDraft] = useState<{ preset: Preset; mode: "create" | "edit" } | null>(null);
-  const [run, setRun] = useState<ExportRun | null>(null);
+  const [run, setRun] = useState<ExportRunProgress | null>(null);
+  const [runDone, setRunDone] = useState(false);
+  const [runBytes, setRunBytes] = useState(0);
+  const cancelExport = useRef(false);
+  const exportZip = useRef<Uint8Array | null>(null);
   const [notice, setNotice] = useState("");
   const [sources, setSources] = useState<BatchSource[]>([]);
   const [fork, setFork] = useState<ReturnType<typeof summarise> | null>(null);
@@ -218,20 +225,28 @@ export function MinimaWorkspace() {
     touch(`Deleted ${preset.label}`);
   }, [doc.presetId, setDoc, touch]);
 
-  /* The export run steps one file at a time so Pause actually holds. */
-  useEffect(() => {
-    if (!run || run.paused || run.done >= exportQueue.length) return;
-    const timer = window.setTimeout(() => setRun((current) => {
-      if (!current) return current;
-      const file = exportQueue[current.done];
-      return {
-        ...current,
-        done: current.done + 1,
-        failed: file?.corrupt ? [...current.failed, `${file.name}: Access denied`] : current.failed,
-      };
-    }), 110);
-    return () => window.clearTimeout(timer);
-  }, [run, exportQueue]);
+  /**
+   * The export renders for real: each queued image is drawn at the document's
+   * canvas size into the placeholder frame, then the batch is zipped and
+   * downloaded. A browser cannot write to a local folder, so a download is the
+   * only honest output.
+   */
+  const startExport = useCallback(async () => {
+    if (!exportQueue.length) return;
+    cancelExport.current = false;
+    setExportOpen(false);
+    setRunDone(false);
+    setRun({ done: 0, total: exportQueue.length, current: "", failed: [] });
+    const result = await runExport(exportQueue, specFromDoc(doc), exportOptions,
+      (progress) => setRun(progress),
+      () => cancelExport.current);
+    exportZip.current = result.zip;
+    setRun(result.progress);
+    setRunBytes(result.zip.byteLength);
+    setRunDone(true);
+    if (result.progress.done > result.progress.failed.length) downloadZip(result.zip, EXPORT_ZIP);
+    touch(`Exported ${result.progress.done - result.progress.failed.length} image(s)`);
+  }, [doc, exportOptions, exportQueue, touch]);
 
   useEffect(() => { if (!assets.length && screen !== "batch") goto("import"); }, [assets.length, goto, screen]);
 
@@ -395,9 +410,11 @@ export function MinimaWorkspace() {
     </footer>
 
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} queue={exportQueue} options={exportOptions}
-      onOptions={setExportOptions} onStart={() => { setExportOpen(false); setRun({ done: 0, failed: [], paused: false }); }} />
-    <ExportProgress run={run} queue={exportQueue} options={exportOptions}
-      onPause={() => setRun((current) => current && { ...current, paused: !current.paused })} onClose={() => setRun(null)} />
+      canvas={`${doc.width} × ${doc.height} px`} onOptions={setExportOptions} onStart={startExport} />
+    <ExportProgress run={run} done={runDone} bytes={runBytes} queue={exportQueue} options={exportOptions}
+      onCancel={() => { cancelExport.current = true; }}
+      onAgain={() => exportZip.current && downloadZip(exportZip.current, EXPORT_ZIP)}
+      onClose={() => { cancelExport.current = true; setRun(null); }} />
     <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     <RemoveDialog intent={removeIntent} onCancel={() => setRemoveIntent(null)} onConfirm={confirmRemoval} />
     <PresetDialog draft={presetDraft} presets={presets} onCancel={() => setPresetDraft(null)} onSave={savePreset} />

@@ -13,6 +13,7 @@ import {
   ShortcutsDialog,
 } from "@/src/dialogs";
 import { makeZip } from "@/src/batch";
+import { encodableFormat, fitInto, framePx, specFromDoc } from "@/src/exportrun";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import {
@@ -104,10 +105,12 @@ check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} preset
   "Overlay opacity", "Apply resize to", "Apply to 3 images",
   "Placeholder frame", "Fill canvas", "Safe area", "Top", "Right", "Bottom", "Left");
 
-check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} onOptions={noop} onStart={noop} />);
+check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} canvas="1801 × 2600 px" onOptions={noop} onStart={noop} />);
 
-check("export progress", <ExportProgress run={{ done: 2, failed: ["d.webp: Access denied"], paused: false }}
-  queue={assets} options={defaultExportOptions} onPause={noop} onClose={noop} />);
+check("export progress", <ExportProgress
+  run={{ done: 2, total: 4, current: "c.png", failed: [{ name: "d.webp", reason: "no source file" }] }}
+  done={false} bytes={0} queue={assets} options={defaultExportOptions}
+  onCancel={noop} onAgain={noop} onClose={noop} />);
 
 check("shortcuts", <ShortcutsDialog open onOpenChange={noop} />);
 
@@ -144,6 +147,15 @@ console.assert(makeZip([]).byteLength === 22, "the batch zip writer is reachable
     onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
   console.assert(bare.includes("product-placeholder"), "an asset with no file still renders the stand-in");
 }
-console.assert(!("drawRect" in ({} as Record<string, unknown>)), "batch no longer owns target geometry");
+// The editor's export renders at the document's canvas size into its frame,
+// so the geometry the dialog promises is the geometry it writes.
+{
+  const spec = specFromDoc(doc);
+  const frame = framePx(spec);
+  console.assert(spec.width === doc.width && spec.height === doc.height, "the export canvas is the document canvas");
+  console.assert(frame.w === (doc.box.w / 100) * doc.width, "the frame is the placeholder, in pixels");
+  console.assert(fitInto(4000, 1000, frame, "contain").w <= frame.w + 0.001, "contain stays inside the frame");
+  console.assert(encodableFormat("tiff") === "png", "TIFF degrades rather than writing an empty blob");
+}
 
 if (!process.exitCode) console.log("\nsmoke: every screen and overlay rendered");

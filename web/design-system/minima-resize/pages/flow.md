@@ -166,15 +166,30 @@ Duplicate · Share · Delete; Edit and Delete are disabled for built-in rows.
 dimensions, safe area, background), which writes into app state — so a new
 preset appears immediately in the inspector dropdown and in Settings.
 
-### Export
-Rail or status-bar Export → options overlay (format, quality — disabled for
-PNG, colour profile, keep-filename, suffix, output folder). The file list
-previews the real output names via `outputName()`, and the size estimate
-follows the chosen format and quality.
+### Export — a real download
 
-**Export *n* images** → progress overlay (panel 5): **Pause export** /
-**Cancel export**, a streaming list of written files, and the failures behind
-**VIEW ERROR LOG**.
+`src/exportrun.ts` renders the queue for real. Each image is drawn at the
+document's canvas size, onto the document's background, inside the placeholder
+frame, honouring Fit/Fill/Stretch and the flips — then the batch is zipped and
+downloaded as `minima-export.zip`.
+
+The dialog used to show an "Output folder" of `C:\Products\MINIMA_Output` and
+run a timer that invented both the progress and the failures. A browser cannot
+write to a path on the machine, so that field is gone and the dialog says where
+the file actually goes. Progress, the current filename and the error log now
+come from the run itself.
+
+| Control | Wiring |
+|---|---|
+| Format | `encodableFormat()` — canvas cannot encode TIFF, so that option degrades to PNG and the dialog says so rather than writing an empty blob |
+| Quality | ignored for PNG |
+| Keep original filename, suffix | `outputName()`, with duplicates suffixed rather than silently overwritten inside the zip |
+| **Export and download** | `runExport()`; Cancel is polled between files, and a file with no source is one skipped entry rather than an aborted run |
+| Download again | re-downloads the zip already in memory |
+
+`fitInto()` mirrors `object-fit`, which is what the canvas previews the frame
+with, so the file matches the screen. Cover overflows and the frame clips it,
+because the frame is a crop window.
 
 ### Settings (panel 12)
 Three panes: General · section list · section detail. General's default preset,
@@ -238,9 +253,16 @@ Computed so two surfaces cannot disagree:
   the `marginsOf()` ⇄ `boxFromMargins()` pair, all in percent of the canvas so
   zoom never changes the result.
 - **Output filenames** — `outputName()` for export, `planNames()` for batch.
+- **Export geometry** — `specFromDoc()` / `framePx()` / `fitInto()`, so the
+  rendered file and the canvas preview cannot diverge.
 - **Back target** — `backTarget()`.
 - **Batch output paths** — `planNames()`.
 
-`npm run check` runs all of it: `tsc`, the `demo()` assertions in `flow.ts` and
-`batch.ts` — including CRC32 against known values and the zip's own structure —
-then server-renders every screen and overlay.
+`npm run check` runs all of it: `tsc`, then the `demo()` self-checks in
+`flow.ts`, `batch.ts` and `exportrun.ts` — including CRC32 against known values
+and the zip's own structure — then server-renders every screen and overlay.
+
+Those self-checks are built on `console.assert`, which prints and carries on
+without touching the exit code, so `check` could report success while
+assertions failed. `src/selfcheck.ts` wraps each one and fails the process
+instead.

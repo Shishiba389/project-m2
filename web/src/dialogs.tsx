@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { FolderOpen, Package, TriangleAlert } from "lucide-react";
+import { Download, Package, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { EXPORT_ZIP, type ExportProgress } from "@/src/exportrun";
 import { megabytes, outputName, type Asset, type Format, type Preset } from "@/src/flow";
 
 export type ExportOptions = {
@@ -14,15 +15,11 @@ export type ExportOptions = {
   profile: string;
   keepName: boolean;
   suffix: string;
-  folder: string;
 };
 
 export const defaultExportOptions: ExportOptions = {
-  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", folder: "C:\\Products\\MINIMA_Output",
+  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized",
 };
-
-/** Progress state for a running export, so a paused run survives a re-render. */
-export type ExportRun = { done: number; failed: string[]; paused: boolean };
 
 export const SHORTCUTS: [string, string][] = [
   ["Ctrl + A", "Select all"], ["Ctrl + Backspace", "Remove images"], ["Enter", "Open in Editor"],
@@ -37,17 +34,20 @@ function Thumb({ asset }: { asset: Asset }) {
   return <div className={`product-placeholder product-${asset.kind}`} aria-hidden="true"><Package strokeWidth={1.25} /><span /></div>;
 }
 
-export function ExportDialog({ open, onOpenChange, queue, options, onOptions, onStart }: {
+export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOptions, onStart }: {
   open: boolean; onOpenChange: (value: boolean) => void; queue: Asset[];
-  options: ExportOptions; onOptions: (next: ExportOptions) => void; onStart: () => void;
+  options: ExportOptions; canvas: string; onOptions: (next: ExportOptions) => void; onStart: () => void;
 }) {
   const estimate = queue.reduce((total, asset) => total + megabytes(asset), 0) * (options.format === "png" ? 1 : options.quality / 100);
-  const failing = queue.filter((asset) => asset.corrupt).length;
+  const missing = queue.filter((asset) => !asset.file).length;
 
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="export-dialog">
     <DialogHeader>
       <DialogTitle>Export {queue.length} images</DialogTitle>
-      <DialogDescription>Applies to every processed image. Pending images are excluded.</DialogDescription>
+      <DialogDescription>
+        Every processed image, rendered at {canvas} into the placeholder frame.
+        Pending images are excluded.
+      </DialogDescription>
     </DialogHeader>
     <div className="export-grid">
       <section>
@@ -69,59 +69,74 @@ export function ExportDialog({ open, onOpenChange, queue, options, onOptions, on
         </label>
         <label className="field-label" htmlFor="suffix">Suffix</label>
         <input id="suffix" className="export-input" value={options.suffix} onChange={(event) => onOptions({ ...options, suffix: event.target.value })} />
-        <label className="field-label" htmlFor="folder">Output folder</label>
-        <div className="output-folder">
-          <input id="folder" value={options.folder} onChange={(event) => onOptions({ ...options, folder: event.target.value })} />
-          <FolderOpen aria-hidden="true" />
-        </div>
+        <p className="export-destination">
+          <Download aria-hidden="true" />
+          Rendered here and downloaded as <code>{EXPORT_ZIP}</code>. Nothing is uploaded,
+          and a browser cannot write to a folder on your machine.
+        </p>
       </section>
       <section className="export-list">
         <strong>{queue.length} files · estimated {estimate.toFixed(1)} MB</strong>
-        {failing > 0 && <p className="export-warning"><TriangleAlert size={12} /> {failing} corrupted file{failing === 1 ? "" : "s"} will fail</p>}
+        {missing > 0 && <p className="export-warning"><TriangleAlert size={12} /> {missing} without a source file will be skipped</p>}
+        {options.format === "tiff" && <p className="export-warning"><TriangleAlert size={12} /> TIFF cannot be encoded in a browser; PNG is written instead</p>}
         {queue.slice(0, 7).map((asset) => <div key={asset.id}><Thumb asset={asset} /><span>{outputName(asset, options.format, options.suffix, options.keepName)}</span></div>)}
         {queue.length > 7 && <span className="export-more">+{queue.length - 7} more</span>}
       </section>
     </div>
     <DialogFooter>
       <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-      <Button disabled={!queue.length} onClick={onStart}>Export {queue.length} images</Button>
+      <Button disabled={!queue.length} onClick={onStart}><Download /> Export and download</Button>
     </DialogFooter>
   </DialogContent></Dialog>;
 }
 
-/** Panel 5: streaming file list, Pause/Cancel, and the error log behind a link. */
-export function ExportProgress({ run, queue, options, onPause, onClose }: {
-  run: ExportRun | null; queue: Asset[]; options: ExportOptions; onPause: () => void; onClose: () => void;
+/**
+ * Real progress for a real render: the counts, the current file and the failures
+ * all come from runExport, and the zip is already downloading by the time this
+ * says complete.
+ */
+export function ExportProgress({ run, done, bytes, queue, options, onCancel, onAgain, onClose }: {
+  run: ExportProgress | null; done: boolean; bytes: number; queue: Asset[]; options: ExportOptions;
+  onCancel: () => void; onAgain: () => void; onClose: () => void;
 }) {
   const [logOpen, setLogOpen] = useState(false);
   useEffect(() => { if (!run) setLogOpen(false); }, [run]);
   if (!run) return null;
 
-  const total = queue.length;
-  const complete = run.done >= total;
-  const percent = total ? Math.round((run.done / total) * 100) : 100;
+  const percent = run.total ? Math.round((run.done / run.total) * 100) : 100;
   const written = queue.slice(0, run.done).slice(-6);
+  const good = run.done - run.failed.length;
 
   return <Dialog open onOpenChange={onClose}><DialogContent className="export-dialog progress-dialog">
     <DialogHeader>
-      <DialogTitle>{complete ? "Export complete" : "Exporting"}</DialogTitle>
-      <DialogDescription>{complete ? `${total - run.failed.length} of ${total} files written` : `Exporting ${run.done} / ${total} (${percent}%)`}</DialogDescription>
+      <DialogTitle>{done ? "Export downloaded" : "Exporting"}</DialogTitle>
+      <DialogDescription>
+        {done
+          ? `${good} of ${run.total} rendered · ${(bytes / 1048576).toFixed(1)} MB zip`
+          : `Rendering ${run.done} / ${run.total} (${percent}%)`}
+      </DialogDescription>
     </DialogHeader>
-    {!complete && <div className="progress-actions">
-      <Button size="sm" variant="outline" onClick={onPause}>{run.paused ? "Resume export" : "Pause export"}</Button>
-      <Button size="sm" variant="outline" onClick={onClose}>Cancel export</Button>
-    </div>}
+    {!done && <>
+      <div className="progress-actions">
+        <Button size="sm" variant="outline" onClick={onCancel}>Cancel export</Button>
+      </div>
+      <p className="batch-current">{run.current}</p>
+    </>}
     <Progress value={percent} />
     <div className="export-stream">{written.map((asset) => <div key={asset.id}>
       <Thumb asset={asset} />
       <span>{outputName(asset, options.format, options.suffix, options.keepName)}</span>
-      {asset.corrupt ? <TriangleAlert size={12} className="stream-fail" /> : null}
     </div>)}</div>
     {run.failed.length > 0 && <button className="log-link" onClick={() => setLogOpen((value) => !value)}>
       {logOpen ? "HIDE ERROR LOG" : `VIEW ERROR LOG (${run.failed.length})`}
     </button>}
-    {logOpen && <div className="error-log">{run.failed.map((line) => <span key={line}>{line}</span>)}</div>}
-    <DialogFooter><Button onClick={onClose}>{complete ? "Done" : "Close"}</Button></DialogFooter>
+    {logOpen && <div className="error-log">
+      {run.failed.map((failure) => <span key={failure.name}>{failure.name}: {failure.reason}</span>)}
+    </div>}
+    <DialogFooter>
+      {done && <Button variant="outline" onClick={onAgain}>Download again</Button>}
+      <Button onClick={onClose}>{done ? "Done" : "Close"}</Button>
+    </DialogFooter>
   </DialogContent></Dialog>;
 }
 
