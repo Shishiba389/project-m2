@@ -12,8 +12,9 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  megabytes, presetById, ratioLabel, resolutionOf, snapBox, statusOf, warningReason,
-  type Asset, type Box, type Doc, type DupPolicy, type Format, type GalleryFilter,
+  clampBox, HANDLES, megabytes, presetById, ratioLabel, resolutionOf, resizeBox, snapBox,
+  statusOf, warningReason,
+  type Asset, type Box, type Doc, type DupPolicy, type Format, type GalleryFilter, type Handle,
   type Preset, type Resolution, type Status, type WarningReason,
 } from "@/src/flow";
 
@@ -45,6 +46,18 @@ export function StatusBadge({ status }: { status: Status }) {
 }
 
 const metaLine = (asset: Asset) => `${asset.src.w} × ${asset.src.h} px · ${megabytes(asset).toFixed(1)} MB`;
+
+/**
+ * The real image wherever there is a file behind the asset. Imports carry one;
+ * anything else falls back to the stand-in rather than rendering a broken img.
+ */
+export function AssetImage({ asset, fit, large }: { asset: Asset; fit?: "contain" | "cover" | "fill"; large?: boolean }) {
+  if (!asset.url) return <ProductPlaceholder kind={asset.kind} large={large} />;
+  return <img className="asset-image" src={asset.url} alt="" draggable={false}
+    style={fit ? { objectFit: fit } : undefined} />;
+}
+
+const objectFitFor = (fit: Doc["fit"]) => (fit === "Fit" ? "contain" : fit === "Fill" ? "cover" : "fill");
 
 /* -------------------------------------------------------------------- import */
 
@@ -177,7 +190,7 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
                 if (event.key === "Enter") { event.preventDefault(); onOpen(asset); }
                 if (event.key === " ") { event.preventDefault(); onChoose(asset, event.ctrlKey || event.metaKey, event.shiftKey); }
               }}>
-              <ProductPlaceholder kind={asset.kind} />
+              <AssetImage asset={asset} fit="cover" />
               <div className="asset-card-footer">
                 <span className="asset-name">{asset.name}</span>
                 <span className="asset-meta">{metaLine(asset)}</span>
@@ -217,22 +230,47 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
     activeThumb.current?.scrollIntoView({ block: "nearest", inline: "center" });
   }, [asset.id]);
   const splitRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; box: Box } | null>(null);
+  const drag = useRef<{ mode: "move" | Handle; x: number; y: number; box: Box } | null>(null);
 
-  const place = (box: Box) => onBox(snapBox(box, doc.safeX, doc.safeY, { safe: guides.snapSafe, grid: guides.snapGrid }));
+  const place = (box: Box) => onBox(clampBox(snapBox(box, doc.safeX, doc.safeY, { safe: guides.snapSafe, grid: guides.snapGrid })));
   const nudge = (dx: number, dy: number) => place({ ...doc.box, x: doc.box.x + dx, y: doc.box.y + dy });
 
+  /**
+   * Moving the frame and resizing it from a handle share one gesture: capture
+   * the pointer on whichever element was pressed, then convert the pixel delta
+   * to percent of the canvas. Hold Shift on a handle to keep the ratio.
+   */
+  const dragProps = (mode: "move" | Handle) => ({
+    onPointerDown: (event: React.PointerEvent) => {
+      event.stopPropagation();
+      (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+      drag.current = { mode, x: event.clientX, y: event.clientY, box: doc.box };
+    },
+    onPointerMove: (event: React.PointerEvent) => {
+      const rect = canvasRef.current?.getBoundingClientRect();
+      const state = drag.current;
+      if (!state || !rect) return;
+      const dx = ((event.clientX - state.x) / rect.width) * 100;
+      const dy = ((event.clientY - state.y) / rect.height) * 100;
+      place(state.mode === "move"
+        ? { ...state.box, x: state.box.x + dx, y: state.box.y + dy }
+        : resizeBox(state.box, state.mode, dx, dy, event.shiftKey ? state.box.w / state.box.h : undefined));
+    },
+    onPointerUp: () => { drag.current = null; },
+    onPointerCancel: () => { drag.current = null; },
+  });
+
   const canvasStyle = { aspectRatio: `${doc.width} / ${doc.height}`, background: doc.background, transform: `scale(${zoom / 100})` };
-  const objectStyle = {
+  const frameStyle = {
     left: `${doc.box.x}%`, top: `${doc.box.y}%`, width: `${doc.box.w}%`, height: `${doc.box.h}%`,
-    transform: `scale(${doc.flipH ? -1 : 1}, ${doc.flipV ? -1 : 1})`,
+    ["--flip" as string]: `scale(${doc.flipH ? -1 : 1}, ${doc.flipV ? -1 : 1})`,
   };
 
   const resized = <div ref={canvasRef} className="canvas" style={canvasStyle}>
     {guides.grid && <div className="canvas-grid" aria-hidden="true" />}
     <div className="safe-area" style={{ inset: `${doc.safeY}% ${doc.safeX}%` }} />
-    <div className="editable-object" tabIndex={0} style={objectStyle}
-      aria-label={`${asset.name}. Drag or use arrow keys to reposition inside the safe area.`}
+    <div className="frame" tabIndex={0} style={frameStyle}
+      aria-label={`Placeholder frame for ${asset.name}. Drag to move, arrow keys to nudge, handles to resize.`}
       onKeyDown={(event) => {
         const amount = event.shiftKey ? 5 : 0.5;
         if (event.key === "ArrowLeft") { event.preventDefault(); nudge(-amount, 0); }
@@ -240,24 +278,17 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
         if (event.key === "ArrowUp") { event.preventDefault(); nudge(0, -amount); }
         if (event.key === "ArrowDown") { event.preventDefault(); nudge(0, amount); }
       }}
-      onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); drag.current = { x: event.clientX, y: event.clientY, box: doc.box }; }}
-      onPointerMove={(event) => {
-        const rect = canvasRef.current?.getBoundingClientRect();
-        if (!drag.current || !rect) return;
-        place({
-          ...drag.current.box,
-          x: drag.current.box.x + ((event.clientX - drag.current.x) / rect.width) * 100,
-          y: drag.current.box.y + ((event.clientY - drag.current.y) / rect.height) * 100,
-        });
-      }}
-      onPointerUp={() => { drag.current = null; }}>
-      <div className="selection-bounds"><i /><i /><i /><i /></div>
-      <ProductPlaceholder kind={asset.kind} large />
+      {...dragProps("move")}>
+      <AssetImage asset={asset} fit={objectFitFor(doc.fit)} large />
+      <div className="frame-outline" aria-hidden="true" />
+      {HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={-1}
+        aria-label={`Resize ${handle}`} aria-valuenow={Math.round(doc.box.w)}
+        className={`frame-handle handle-${handle}`} {...dragProps(handle)} />)}
     </div>
   </div>;
 
   const original = <div className="canvas original-canvas" style={{ ...canvasStyle, background: "#f5f5f3" }}>
-    <div className="original-object" style={{ opacity: overlay / 100 }}><ProductPlaceholder kind={asset.kind} large /></div>
+    <div className="original-object" style={{ opacity: overlay / 100 }}><AssetImage asset={asset} fit="contain" large /></div>
   </div>;
 
   return <div className="content-pane editor-pane">
@@ -306,7 +337,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
           aria-current={active ? "true" : undefined}
           title={`${item.name} — ${status}`} aria-label={`${item.name}, ${status}`}
           onClick={() => onChoose(item)}>
-          <ProductPlaceholder kind={item.kind} />
+          <AssetImage asset={item} fit="cover" />
           <span className={`strip-dot dot-${status.toLowerCase()}`} aria-hidden="true" />
           {selected.includes(item.id) && <Check className="film-check" />}
         </button>;
@@ -338,7 +369,7 @@ export function Review({ assets, target, onOpen, onFix, onFixAll, onRetry }: {
       return <Popover key={asset.id}>
         <PopoverTrigger asChild>
           <article className="review-card" role="button" tabIndex={0} aria-label={`${asset.name} diagnostics`}>
-            <ProductPlaceholder kind={asset.kind} />
+            <AssetImage asset={asset} fit="cover" />
             <StatusBadge status={statusOf(asset, target)} />
             <strong>{asset.name}</strong>
             <span>{metaLine(asset)}</span>

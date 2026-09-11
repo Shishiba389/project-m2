@@ -31,8 +31,10 @@ export const SHORTCUTS: [string, string][] = [
   ["Shift + Arrows", "Nudge ×10"], ["Right-click", "Image and preset menus"],
 ];
 
-function Thumb({ kind }: { kind: Asset["kind"] }) {
-  return <div className={`product-placeholder product-${kind}`} aria-hidden="true"><Package strokeWidth={1.25} /><span /></div>;
+/** The real file where there is one, so the export list shows what ships. */
+function Thumb({ asset }: { asset: Asset }) {
+  if (asset.url) return <img className="asset-image" src={asset.url} alt="" draggable={false} style={{ objectFit: "cover" }} />;
+  return <div className={`product-placeholder product-${asset.kind}`} aria-hidden="true"><Package strokeWidth={1.25} /><span /></div>;
 }
 
 export function ExportDialog({ open, onOpenChange, queue, options, onOptions, onStart }: {
@@ -76,7 +78,7 @@ export function ExportDialog({ open, onOpenChange, queue, options, onOptions, on
       <section className="export-list">
         <strong>{queue.length} files · estimated {estimate.toFixed(1)} MB</strong>
         {failing > 0 && <p className="export-warning"><TriangleAlert size={12} /> {failing} corrupted file{failing === 1 ? "" : "s"} will fail</p>}
-        {queue.slice(0, 7).map((asset) => <div key={asset.id}><Thumb kind={asset.kind} /><span>{outputName(asset, options.format, options.suffix, options.keepName)}</span></div>)}
+        {queue.slice(0, 7).map((asset) => <div key={asset.id}><Thumb asset={asset} /><span>{outputName(asset, options.format, options.suffix, options.keepName)}</span></div>)}
         {queue.length > 7 && <span className="export-more">+{queue.length - 7} more</span>}
       </section>
     </div>
@@ -111,7 +113,7 @@ export function ExportProgress({ run, queue, options, onPause, onClose }: {
     </div>}
     <Progress value={percent} />
     <div className="export-stream">{written.map((asset) => <div key={asset.id}>
-      <Thumb kind={asset.kind} />
+      <Thumb asset={asset} />
       <span>{outputName(asset, options.format, options.suffix, options.keepName)}</span>
       {asset.corrupt ? <TriangleAlert size={12} className="stream-fail" /> : null}
     </div>)}</div>

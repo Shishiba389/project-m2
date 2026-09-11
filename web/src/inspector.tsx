@@ -7,9 +7,11 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import type { Guides } from "@/src/screens";
 import {
-  anchor, fitBox, objectScale, ratioLabel, srcRatio,
-  type Align, type Asset, type Doc, type Preset, type Scope,
+  anchor, boxFromMargins, fullBox, marginsOf, ratioLabel, safeBox,
+  type Align, type Asset, type Doc, type Margins, type Preset, type Scope,
 } from "@/src/flow";
+
+const round = (value: number) => Math.round(value * 10) / 10;
 
 const ALIGNMENTS: Align[] = ["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"];
 
@@ -29,17 +31,21 @@ export function Inspector({
   onApply: () => void; onFocus: () => void; onClose: () => void; onResetGuides: () => void;
 }) {
   /** Any change to the canvas rules re-derives the object box from the same rules. */
-  const resize = (patch: Partial<Doc>) => onDoc((current) => {
+  const patchDoc = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
+  /** Changing the safe area reframes the placeholder to match it. */
+  const reframe = (patch: Partial<Doc>) => onDoc((current) => {
     const next = { ...current, ...patch };
-    return { ...next, box: fitBox(next.fit, srcRatio(asset), next.width / next.height, next.safeX, next.safeY) };
+    return { ...next, box: safeBox(next.safeX, next.safeY) };
   });
   const setDimension = (edge: "width" | "height", value: number) => onDoc((current) => {
     if (!Number.isFinite(value) || value <= 0) return current;
-    const next = edge === "width"
+    return edge === "width"
       ? { ...current, width: value, height: current.lock ? Math.round(value / current.ratio) : current.height }
       : { ...current, height: value, width: current.lock ? Math.round(value * current.ratio) : current.width };
-    return { ...next, box: fitBox(next.fit, srcRatio(asset), next.width / next.height, next.safeX, next.safeY) };
   });
+  const margins = marginsOf(doc.box);
+  const setMargin = (side: keyof Margins, value: number) =>
+    onDoc((current) => ({ ...current, box: boxFromMargins({ ...marginsOf(current.box), [side]: value }) }));
 
   return <aside className="inspector" aria-label="Resize inspector">
     <div className="inspector-heading">
@@ -68,9 +74,27 @@ export function Inspector({
         Aspect ratio lock · {ratioLabel(doc.width, doc.height)}
       </label>
 
+      <label className="field-label">How the image fills the frame</label>
       <div className="segmented">{(["Fit", "Fill", "Stretch"] as const).map((mode) =>
-        <button key={mode} className={doc.fit === mode ? "active" : ""} onClick={() => resize({ fit: mode })}>{mode}</button>)}
+        <button key={mode} className={doc.fit === mode ? "active" : ""} onClick={() => patchDoc({ fit: mode })}>{mode}</button>)}
       </div>
+
+      {/* The placeholder frame: nine anchors, numeric margins, and one button
+          to take it to the canvas edges. Every image in the queue uses it. */}
+      <label className="field-label">Placeholder frame</label>
+      <div className="frame-actions">
+        <button onClick={() => onDoc((current) => ({ ...current, box: fullBox() }))}>Fill canvas</button>
+        <button onClick={() => onDoc((current) => ({ ...current, box: safeBox(current.safeX, current.safeY) }))}>Safe area</button>
+      </div>
+      <div className="margin-grid">
+        {([["top", "Top"], ["right", "Right"], ["bottom", "Bottom"], ["left", "Left"]] as [keyof Margins, string][])
+          .map(([side, label]) => <label key={side}>
+            <span>{label}</span>
+            <input type="number" min={0} max={96} step={0.5} aria-label={`${label} margin, percent`}
+              value={round(margins[side])} onChange={(event) => setMargin(side, Number(event.target.value))} />
+          </label>)}
+      </div>
+      <p className="inspector-note">Frame {Math.round((doc.box.w / 100) * doc.width)} × {Math.round((doc.box.h / 100) * doc.height)} px</p>
 
       <label className="field-label">Alignment matrix</label>
       <div className="alignment-grid">{ALIGNMENTS.map((position) =>
@@ -84,9 +108,9 @@ export function Inspector({
       </div>
 
       <div className="slider-label"><span>Safe area · vertical</span><strong>{doc.safeY.toFixed(2)}%</strong></div>
-      <Slider value={[doc.safeY]} onValueChange={([value]) => resize({ safeY: value })} max={30} step={0.5} />
+      <Slider value={[doc.safeY]} onValueChange={([value]) => reframe({ safeY: value })} max={30} step={0.5} />
       <div className="slider-label"><span>Safe area · horizontal</span><strong>{doc.safeX.toFixed(2)}%</strong></div>
-      <Slider value={[doc.safeX]} onValueChange={([value]) => resize({ safeX: value })} max={30} step={0.01} />
+      <Slider value={[doc.safeX]} onValueChange={([value]) => reframe({ safeX: value })} max={30} step={0.01} />
 
       {/* Panel 9: the split view's overlay strength. */}
       {compare && <>
@@ -94,8 +118,6 @@ export function Inspector({
         <Slider value={[overlay]} onValueChange={([value]) => onOverlay(value)} max={100} step={1} />
       </>}
 
-      <div className="slider-label"><span>Object scale</span><strong>{objectScale(doc.box, target, asset)}%</strong></div>
-      <p className="inspector-note">Actual image {Math.round((doc.box.w / 100) * doc.width)} × {Math.round((doc.box.h / 100) * doc.height)} px</p>
 
       {/* Guides and background are set once for a batch, not per image, so they
           collapse out of the way. <details> needs no state and no library. */}
