@@ -22,7 +22,7 @@ There is exactly **one** navigation state, `screen`. The old dual
 
 | `screen` | Step served | Entry | Exit |
 |---|---|---|---|
-| `import` | Import | rail **Import**; automatic when `assets.length === 0` | an import opens the lane fork |
+| `import` | Import | rail **Import**; automatic when `assets.length === 0`, which is every first run | an import opens the lane fork |
 | `batch` | Resize a whole drop at once | the fork's **Batch resize**; rail **Batch** | Back → `gallery` |
 | `gallery` | Select, batch manage | rail **Images**; Back from editor/review; view switch **Gallery** | — (the hub) |
 | `editor` | Resize / Position | double-click a card; **Enter**; view switch **Editor** | Back → `gallery` |
@@ -88,10 +88,41 @@ Export appears once in the rail; the status bar's Export opens the same overlay.
 
 Cards show filename, `w × h px · size`, and the derived status badge.
 
+### Real files, everywhere
+
+`Asset` carries the dropped `File` and an object URL, so the gallery card, the
+filmstrip, the canvas, the comparison, the review card and the export list all
+draw the image itself. `AssetImage` is the single place that decides, and falls
+back to a stand-in only when there is no file.
+
+There are no seeded demo assets. They had no file behind them, so every surface
+could only draw a stand-in — which is what made the gallery and the export list
+look broken. A first run therefore starts on Import, and object URLs are
+revoked when an asset is removed.
+
+### The placeholder frame
+
+The editor's canvas holds one frame, and the image fills it. The frame belongs
+to the batch, not to one file: every image in the queue is laid out in the same
+frame, so switching images leaves it alone. Fit / Fill / Stretch describe how
+the image meets the frame, which is `object-fit` contain / cover / fill.
+
+| Control | Wiring |
+|---|---|
+| Eight handles | `resizeBox()`. Corners move two edges, edges move one; nothing inverts or shrinks below 4% of the canvas. Hold **Shift** on a handle to keep the frame's ratio |
+| Drag the frame | `clampBox()` keeps it inside the canvas |
+| Margins Top / Right / Bottom / Left | `marginsOf()` and `boxFromMargins()` are the same rect read from the other side, so the numbers and the handles can never disagree |
+| **Fill canvas** | `fullBox()` — the frame spans the canvas, and the image fills all of it |
+| **Safe area** | `safeBox()` — back to the margins the preset specifies |
+| 3×3 alignment | `anchor()` places the frame at one of nine positions inside the safe area |
+
+A frame drawn with Fit leaves margins, and those show the canvas background,
+because that is the colour an export paints.
+
 ### Editor canvas
 | Control | Wiring |
 |---|---|
-| Drag / arrow keys | moves the object box; Shift = ×10 |
+| Drag / arrow keys | moves the frame; Shift = ×10 |
 | Snapping | `snapBox()` honours the two snap switches: safe-area edges plus centre lines, and the thirds grid. Both off means free movement |
 | Rulers, grid overlay, grid button (panel 10) | `guides.rulers` / `guides.grid` |
 | Split handle (panel 9) | drag or arrow keys move `splitAt`; the divider clips the resized canvas over the original |
@@ -102,10 +133,11 @@ Cards show filename, `w × h px · size`, and the derived status badge.
 |---|---|
 | Preset | applies the whole preset row: dimensions, safe area, fit, align, background |
 | Width × Height | free typing; aspect lock re-derives the other from the ratio captured when the lock engaged |
-| Fit / Fill / Stretch | re-sizes the object box via `fitBox()` |
-| 3×3 alignment | places the object via `anchor()` inside the safe area |
+| Fit / Fill / Stretch | how the image fills the frame, as `object-fit` |
+| Placeholder frame | Fill canvas / Safe area, plus the four numeric margins |
+| 3×3 alignment | places the frame via `anchor()` inside the safe area |
 | Flip H / Flip V (panel 3) | `doc.flipH` / `doc.flipV`, applied as a canvas transform |
-| Safe area sliders | live overlay, re-runs fit and align |
+| Safe area sliders | live overlay, and reframes the placeholder to match |
 | Overlay opacity (panel 9) | strength of the original in the split view; only shown while comparing |
 | Show grid / rulers, Snap to grid / safe area, Reset guides (panel 10) | `guides`; Reset restores the defaults and re-applies the preset |
 | Canvas background (panel 3) | colour picker plus hex field, both writing `doc.background` |
@@ -160,7 +192,7 @@ image count, folder count, whether there are subfolders, total size — and asks
 | Choice | Goes to | What it is for |
 |---|---|---|
 | **Batch resize** | `screen = batch` | one target for every file, resized in the browser and downloaded as a zip. Suggested when more than one image arrived |
-| **Open the editor** | `screen = gallery` | per-image placement, safe area, review, export. Suggested for a single image |
+| **Open the editor** | `screen = editor`, first file active | per-image placement, safe area, review, export. Suggested for a single image |
 
 Dismissing the dialog is the same as choosing the editor. The two lanes are
 different jobs, and guessing wrong costs the most on the largest drops, so the
@@ -199,8 +231,9 @@ Computed so two surfaces cannot disagree:
   overflow; `fixed` clears both.
 - **Filter counts** — `countByStatus()`. **Gallery rows** — `filterAssets()`.
 - **Apply / Export scope** — `scopeAssets()`.
-- **Object box** — `fitBox()` / `anchor()` / `snapBox()`, in percent of the
-  canvas so zoom never changes the result.
+- **The frame** — `resizeBox()` / `clampBox()` / `anchor()` / `snapBox()` and
+  the `marginsOf()` ⇄ `boxFromMargins()` pair, all in percent of the canvas so
+  zoom never changes the result.
 - **Output filenames** — `outputName()` for export, `planNames()` for batch.
 - **Back target** — `backTarget()`.
 - **Batch draw rect** — `drawRect()`, shared by the preview and the canvas draw.

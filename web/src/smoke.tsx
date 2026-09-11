@@ -29,7 +29,7 @@ const assets: Asset[] = [
   { id: 3, name: "c.png", kind: "bottle", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: true, fixed: false, corrupt: false },
   { id: 4, name: "d.webp", kind: "fashion", format: "webp", src: { w: 900, h: 900 }, processed: true, overflow: false, fixed: false, corrupt: true },
 ];
-const doc = docFromPreset(presetById("zalando"), assets[0]);
+const doc = docFromPreset(presetById("zalando"));
 const target = docTarget(doc, PRESETS);
 const counts = countByStatus(assets, target);
 const noop = () => {};
@@ -45,7 +45,9 @@ const noop = () => {};
 function check(label: string, node: React.ReactElement, ...needles: string[]) {
   let html = "";
   try {
-    html = renderToString(node).replaceAll("<!-- -->", "");
+    // Text nodes are split by an empty comment, and & arrives escaped, so
+    // assertions can be written the way the UI reads.
+    html = renderToString(node).replaceAll("<!-- -->", "").replaceAll("&amp;", "&");
   } catch (error) {
     console.error(`FAIL ${label}: ${(error as Error).message}`);
     process.exitCode = 1;
@@ -60,8 +62,11 @@ function check(label: string, node: React.ReactElement, ...needles: string[]) {
   console.log(`ok   ${label} (${html.length} chars)`);
 }
 
-check("workspace shell", <MinimaWorkspace />,
-  "MINIMA Resize", "Resize Inspector", "Apply to", "need attention", "All changes saved");
+// A first run has no assets, so the shell opens on Import. The seeded demo
+// images are gone: they had no file behind them and were the stand-ins showing
+// up in the gallery, the filmstrip and the export list.
+check("workspace shell, first run", <MinimaWorkspace />,
+  "Drag & Drop", "Start a resize batch", "Drop images here", "All changes saved", "no images");
 
 check("import screen", <ImportScreen policy="skip" onPolicy={noop} onFiles={noop} onFolders={noop} onCloud={noop} onDrop={noop} />,
   "Start a resize batch", "Drop images here", "Add files", "Add folders", "Import from cloud",
@@ -74,7 +79,7 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
 check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onBox={noop} onSplit={noop} onChoose={noop} onToggleGrid={noop} onStep={noop} />,
-  "editable-object", "filmstrip", "canvas-grid");
+  "frame-handle", "handle-nw", "handle-se", "handle-n", "handle-e", "filmstrip", "canvas-grid");
 
 check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
@@ -96,7 +101,8 @@ check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} preset
   onPreset={noop} onDoc={noop} onGuides={noop} onScope={noop} onOverlay={noop} onApply={noop} onFocus={noop}
   onClose={noop} onResetGuides={noop} />,
   "Resize Inspector", "Alignment matrix", "Flip H", "Guides", "Snap safe", "Canvas background",
-  "Overlay opacity", "Apply resize to", "Apply to 3 images");
+  "Overlay opacity", "Apply resize to", "Apply to 3 images",
+  "Placeholder frame", "Fill canvas", "Safe area", "Top", "Right", "Bottom", "Left");
 
 check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} onOptions={noop} onStart={noop} />);
 
@@ -125,6 +131,19 @@ check("import fork", <ImportForkDialog summary={{ images: 12, folders: 3, nested
 console.assert(outputName(assets[0], "jpg", "_resized", true) === "a_resized.jpg", "the export dialog previews real filenames");
 console.assert(assets.filter((asset) => asset.corrupt).length === 1, "the export dialog has a failure to warn about");
 console.assert(makeZip([]).byteLength === 22, "the batch zip writer is reachable from the app bundle");
+{
+  // Real images, not stand-ins, wherever a file is attached.
+  const withFile = { ...assets[0], url: "blob:fake" };
+  const html = renderToString(<Gallery assets={[withFile]} total={1} selected={[]} counts={counts}
+    filter={emptyFilter} zoom={100} needsAttention={0} target={target}
+    onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
+  console.assert(html.includes('src="blob:fake"'), "a gallery card draws the file it was given");
+  console.assert(!html.includes("product-placeholder"), "and does not fall back to the stand-in");
+  const bare = renderToString(<Gallery assets={[assets[0]]} total={1} selected={[]} counts={counts}
+    filter={emptyFilter} zoom={100} needsAttention={0} target={target}
+    onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
+  console.assert(bare.includes("product-placeholder"), "an asset with no file still renders the stand-in");
+}
 console.assert(defaultTarget.width > 0 && defaultTarget.height > 0, "batch ships a usable default target");
 
 if (!process.exitCode) console.log("\nsmoke: every screen and overlay rendered");
