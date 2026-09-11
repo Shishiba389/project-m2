@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft, ChevronLeft, ChevronRight, CircleHelp, Columns2, Download, Expand, Image as ImageIcon,
-  Import, Layers3, Minus, PanelLeft, PanelRight, Plus, Redo2, Settings, TriangleAlert, Undo2, Upload,
+  Import, Layers, Layers3, Minus, PanelLeft, PanelRight, Plus, Redo2, Settings, TriangleAlert,
+  Undo2, Upload,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   CloudDialog, defaultExportOptions, ExportDialog, ExportProgress, PresetDialog, RemoveDialog,
   ShortcutsDialog, type ExportOptions, type ExportRun,
 } from "@/src/dialogs";
+import { summarise, toSources, type BatchSource } from "@/src/batch";
+import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import {
   defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
@@ -86,6 +89,8 @@ export function MinimaWorkspace() {
   const [presetDraft, setPresetDraft] = useState<{ preset: Preset; mode: "create" | "edit" } | null>(null);
   const [run, setRun] = useState<ExportRun | null>(null);
   const [notice, setNotice] = useState("");
+  const [sources, setSources] = useState<BatchSource[]>([]);
+  const [fork, setFork] = useState<ReturnType<typeof summarise> | null>(null);
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -170,10 +175,21 @@ export function MinimaWorkspace() {
     touch(`Imported ${merged.added}${merged.skipped ? `, skipped ${merged.skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
   }, [assets, goto, policy, touch]);
 
+  /**
+   * Keeps the File handles: batch re-encodes them for real, so names alone are
+   * not enough. toSources also filters by extension, which a directory picker
+   * needs — it reports an empty MIME type for plenty of images.
+   */
   const importFiles = useCallback((incoming: FileList | null) => {
-    const names = Array.from(incoming ?? []).filter((file) => file.type.startsWith("image/")).map((file) => file.name);
-    importNames(names);
-  }, [importNames]);
+    const picked = toSources(Array.from(incoming ?? []), Date.now());
+    if (!picked.length) return;
+    setSources(picked);
+    const merged = mergeImport(assets, picked.map((source) => ({ name: source.name })), policy);
+    setAssets(merged.assets);
+    setSelected([]);
+    setFork(summarise(picked));
+    touch(`Imported ${merged.added}${merged.skipped ? `, skipped ${merged.skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
+  }, [assets, policy, touch]);
 
   const confirmRemoval = useCallback(() => {
     if (!removeIntent) return;
@@ -223,7 +239,7 @@ export function MinimaWorkspace() {
     return () => window.clearTimeout(timer);
   }, [run, exportQueue]);
 
-  useEffect(() => { if (!assets.length) goto("import"); }, [assets.length, goto]);
+  useEffect(() => { if (!assets.length && screen !== "batch") goto("import"); }, [assets.length, goto, screen]);
 
   /* The theme choice has to reach the document, or the segmented control is a lie. */
   useEffect(() => {
@@ -259,10 +275,12 @@ export function MinimaWorkspace() {
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
   }, [active, askRemoval, goto, openEditor, redo, screen, undo, visible]);
 
-  const step = (delta: number) => {
-    const at = assets.findIndex((asset) => asset.id === activeId);
-    setActiveId(assets[(at + delta + assets.length) % assets.length].id);
-  };
+  const step = useCallback((delta: number) => {
+    setActiveId((current) => {
+      const at = assets.findIndex((asset) => asset.id === current);
+      return assets[(at + delta + assets.length) % assets.length]?.id ?? current;
+    });
+  }, [assets]);
 
   if (focus) return <main className="focus-workspace">
     <button className="focus-exit" onClick={() => setFocus(false)}>Press Ctrl+Shift+F to exit Focus Mode</button>
@@ -284,6 +302,7 @@ export function MinimaWorkspace() {
     : screen === "settings" ? "Settings"
     : screen === "presets" ? "Presets Manager"
     : screen === "review" ? "Error Diagnostics"
+    : screen === "batch" ? "Batch resize"
     : screen === "import" ? "Drag & Drop"
     : "MINIMA Resize";
 
@@ -320,6 +339,7 @@ export function MinimaWorkspace() {
       <div className="rail-main">
         <RailButton icon={Import} label="Import" active={screen === "import"} onClick={() => goto("import")} />
         <RailButton icon={ImageIcon} label="Images" active={["gallery", "editor", "review"].includes(screen)} disabled={!assets.length} onClick={() => goto(imageScreen)} />
+        <RailButton icon={Layers} label="Batch" active={screen === "batch"} disabled={!sources.length} onClick={() => goto("batch")} />
         <RailButton icon={Layers3} label="Presets" active={screen === "presets"} onClick={() => goto("presets")} />
         <RailButton icon={Upload} label="Export" disabled={!exportQueue.length} onClick={() => setExportOpen(true)} />
       </div>
@@ -339,6 +359,7 @@ export function MinimaWorkspace() {
         onDelete={deletePreset}
         onShare={(preset) => touch(`${preset.label} rules copied for sharing`)} />}
       {screen === "settings" && <SettingsScreen theme={theme} onTheme={setTheme} />}
+      {screen === "batch" && <BatchScreen sources={sources} onLeave={() => goto(assets.length ? "gallery" : "import")} />}
 
       {screen === "gallery" && <Gallery assets={visible} total={assets.length} selected={selected} counts={counts} filter={filter} zoom={zoom}
         needsAttention={needsAttention} target={target} onFilter={setFilter} onChoose={chooseAsset} onOpen={openEditor}
@@ -346,11 +367,11 @@ export function MinimaWorkspace() {
       {screen === "editor" && <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onBox={(box) => setDoc((current) => ({ ...current, box }))} onSplit={setSplitAt} onChoose={openEditor}
-        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} />}
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
 
-      {inspectorOpen && !["import", "presets", "settings"].includes(screen) && (
+      {inspectorOpen && !["import", "presets", "settings", "batch"].includes(screen) && (
         <Inspector doc={doc} target={target} asset={active} presets={presets} guides={guides} scope={scope}
             scopeCount={scoped.length} selectedCount={selected.length} totalCount={assets.length}
             compare={compare} overlay={overlay} processing={processing} progress={progress}
@@ -364,7 +385,7 @@ export function MinimaWorkspace() {
       <span>{notice || (saving ? "Saving…" : "All changes saved")}
         {onImages && assets.length ? ` · ${selected.length} of ${assets.length} selected` : ""}
         {!assets.length ? " · no images" : ""}</span>
-      <div className="status-actions">
+      {screen !== "batch" && <div className="status-actions">
         {needsAttention > 0 && screen !== "review" && <Button variant="ghost" size="sm" onClick={() => goto("review")}><TriangleAlert /> {needsAttention} need attention</Button>}
         <Button variant="ghost" size="sm" aria-pressed={compare} disabled={!assets.length} onClick={() => { goto("editor"); setCompare((value) => !value); }}><Columns2 /> Compare</Button>
         <div className="view-switch" role="group" aria-label="Workspace view">
@@ -373,7 +394,7 @@ export function MinimaWorkspace() {
         </div>
         <Button variant="secondary" size="sm" disabled={processing || !scoped.length} onClick={runApply}>Apply preset</Button>
         <Button size="sm" disabled={!exportQueue.length} onClick={() => setExportOpen(true)}><Download /> Export</Button>
-      </div>
+      </div>}
       <span>{onImages && assets.length
         ? `${active.src.w} × ${active.src.h} px · ${ratioLabel(doc.width, doc.height)} · ${active.format.toUpperCase()} · ${megabytes(active).toFixed(1)} MB`
         : ""}</span>
@@ -386,6 +407,9 @@ export function MinimaWorkspace() {
     <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     <RemoveDialog intent={removeIntent} onCancel={() => setRemoveIntent(null)} onConfirm={confirmRemoval} />
     <PresetDialog draft={presetDraft} presets={presets} onCancel={() => setPresetDraft(null)} onSave={savePreset} />
+    <ImportForkDialog summary={fork}
+      onBatch={() => { setFork(null); goto("batch"); }}
+      onEditor={() => { setFork(null); goto("gallery"); }} />
     <CloudDialog open={cloudOpen} onOpenChange={setCloudOpen} onImport={(names) => { setCloudOpen(false); importNames(names); }} />
 
     <input ref={filesInput} type="file" accept="image/*" multiple className="sr-only" onChange={(event) => importFiles(event.target.files)} />

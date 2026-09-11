@@ -8,7 +8,7 @@
  * See design-system/minima-resize/pages/flow.md for the wiring table.
  */
 
-export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings";
+export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
 export type Status = "Completed" | "Pending" | "Warning" | "Error";
 export type Scope = "current" | "selected" | "all";
 export type Fit = "Fit" | "Fill" | "Stretch";
@@ -389,7 +389,9 @@ export function scopeAssets(scope: Scope, assets: Asset[], selected: number[], a
  */
 export function backTarget(screen: Screen, hasAssets: boolean): Screen | null {
   if (screen === "editor" || screen === "review") return "gallery";
-  if (screen === "presets" || screen === "settings") return hasAssets ? "gallery" : "import";
+  if (screen === "presets" || screen === "settings" || screen === "batch") {
+    return hasAssets ? "gallery" : "import";
+  }
   return null; // import and gallery are the roots
 }
 
@@ -502,6 +504,7 @@ export function demo() {
   console.assert(backTarget("review", true) === "gallery", "review backs out to gallery");
   console.assert(backTarget("settings", true) === "gallery", "settings backs out to the work");
   console.assert(backTarget("settings", false) === "import", "settings backs out to import with no assets");
+  console.assert(backTarget("batch", true) === "gallery", "batch backs out to the gallery");
   console.assert(backTarget("import", true) === null, "import is a root");
   console.assert(backTarget("gallery", true) === null, "gallery is a root, so Back is hidden rather than a no-op");
 
