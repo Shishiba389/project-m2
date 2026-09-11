@@ -52,8 +52,10 @@ const metaLine = (asset: Asset) => `${asset.src.w} × ${asset.src.h} px · ${meg
  * anything else falls back to the stand-in rather than rendering a broken img.
  */
 export function AssetImage({ asset, fit, large }: { asset: Asset; fit?: "contain" | "cover" | "fill"; large?: boolean }) {
-  if (!asset.url) return <ProductPlaceholder kind={asset.kind} large={large} />;
-  return <img className="asset-image" src={asset.url} alt="" draggable={false}
+  const source = large ? asset.url : asset.thumbnailUrl ?? asset.url;
+  if (!source) return <ProductPlaceholder kind={asset.kind} large={large} />;
+  return <img className="asset-image" src={source} alt="" draggable={false}
+    loading={large ? "eager" : "lazy"} decoding="async"
     style={fit ? { objectFit: fit } : undefined} />;
 }
 
@@ -124,6 +126,10 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
   // came from a downscaled reference screenshot and truncated every filename.
   const columnWidth = Math.round(168 * (zoom / 100));
   const facets = filter.formats.length + filter.resolutions.length + filter.errorTypes.length;
+  const [visibleLimit, setVisibleLimit] = useState(120);
+  useEffect(() => setVisibleLimit(120), [filter, assets.length]);
+  const shownAssets = assets.slice(0, visibleLimit);
+  const selectedSet = new Set(selected);
   const toggle = <T,>(list: T[], value: T) => list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 
   return <div className="content-pane gallery-pane">
@@ -176,9 +182,9 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
       {counts.All} images · {counts.Completed} completed · {counts.Pending} pending · {needsAttention} need attention · preset {target.label}
     </p>
     <div className="asset-grid" style={{ gridTemplateColumns: `repeat(auto-fill,minmax(${columnWidth}px,1fr))` }}>
-      {assets.map((asset) => {
+      {shownAssets.map((asset) => {
         const status = statusOf(asset, target);
-        const isSelected = selected.includes(asset.id);
+        const isSelected = selectedSet.has(asset.id);
         return <ContextMenu key={asset.id}>
           <ContextMenuTrigger asChild>
             <article role="button" tabIndex={0} aria-pressed={isSelected} aria-label={`${asset.name}, ${status}`}
@@ -212,6 +218,11 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
       })}
       {!assets.length && <p className="gallery-empty">No images match this filter.</p>}
     </div>
+    {shownAssets.length < assets.length && <div className="gallery-more">
+      <Button variant="secondary" onClick={() => setVisibleLimit((value) => value + 120)}>
+        Load 120 more <span>{shownAssets.length} / {assets.length}</span>
+      </Button>
+    </div>}
   </div>;
 }
 
@@ -225,6 +236,9 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const activeThumb = useRef<HTMLButtonElement>(null);
+  const activeIndex = assets.findIndex((item) => item.id === asset.id);
+  const stripAssets = assets.slice(Math.max(0, activeIndex - 30), Math.min(assets.length, activeIndex + 31));
+  const selectedSet = new Set(selected);
   // Paging past the visible thumbs should bring the new one into view.
   useEffect(() => {
     activeThumb.current?.scrollIntoView({ block: "nearest", inline: "center" });
@@ -327,10 +341,10 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
     <div className="filmstrip">
       <div className="strip-nav">
         <button aria-label="Previous image" onClick={() => onStep(-1)}><ChevronLeft /></button>
-        <span>{assets.findIndex((item) => item.id === asset.id) + 1} / {assets.length}</span>
+        <span>{activeIndex + 1} / {assets.length}</span>
         <button aria-label="Next image" onClick={() => onStep(1)}><ChevronRight /></button>
       </div>
-      <div className="strip-scroll">{assets.map((item) => {
+      <div className="strip-scroll">{stripAssets.map((item) => {
         const status = statusOf(item, target);
         const active = item.id === asset.id;
         return <button key={item.id} ref={active ? activeThumb : undefined} className={active ? "active" : ""}
@@ -339,7 +353,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
           onClick={() => onChoose(item)}>
           <AssetImage asset={item} fit="cover" />
           <span className={`strip-dot dot-${status.toLowerCase()}`} aria-hidden="true" />
-          {selected.includes(item.id) && <Check className="film-check" />}
+          {selectedSet.has(item.id) && <Check className="film-check" />}
         </button>;
       })}</div>
     </div>

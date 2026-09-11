@@ -103,6 +103,8 @@ export type Asset = {
   file?: File;
   /** Object URL for the file. Owned by the app, revoked when the asset goes. */
   url?: string;
+  /** Small generated preview; Gallery and filmstrip never decode the original. */
+  thumbnailUrl?: string;
   /** Source pixel dimensions — drives the aspect-mismatch warning. */
   src: { w: number; h: number };
   /** Set once a preset has been applied to this asset. */
@@ -209,7 +211,7 @@ export function outputName(asset: Asset, format: Format, suffix: string, keepNam
  */
 export function mergeImport(
   existing: Asset[],
-  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; corrupt?: boolean }[],
+  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; thumbnailUrl?: string; corrupt?: boolean }[],
   policy: DupPolicy,
 ): { assets: Asset[]; added: number; skipped: number; renamed: number } {
   const assets = [...existing];
@@ -227,6 +229,7 @@ export function mergeImport(
       format: formatOf(file.name),
       file: file.file,
       url: file.url,
+      thumbnailUrl: file.thumbnailUrl,
       src: file.src ?? { w: 1801, h: 2600 },
       processed: false,
       overflow: false,
@@ -468,7 +471,10 @@ export function docTarget(doc: Doc, presets: Preset[]): Preset {
 
 export function scopeAssets(scope: Scope, assets: Asset[], selected: number[], activeId: number) {
   if (scope === "all") return assets;
-  if (scope === "selected") return assets.filter((asset) => selected.includes(asset.id));
+  if (scope === "selected") {
+    const selectedSet = new Set(selected);
+    return assets.filter((asset) => selectedSet.has(asset.id));
+  }
   return assets.filter((asset) => asset.id === activeId);
 }
 

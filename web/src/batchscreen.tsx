@@ -67,7 +67,7 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
 
   // Previews are object URLs, so they have to be released when the set changes.
   const previews = useMemo(() => sources.slice(0, 6).map((source) => ({
-    id: source.id, name: source.name, url: URL.createObjectURL(source.file),
+    id: source.id, name: source.name, url: URL.createObjectURL(source.thumbnail ?? source.file),
   })), [sources]);
   useEffect(() => () => previews.forEach((preview) => URL.revokeObjectURL(preview.url)), [previews]);
 

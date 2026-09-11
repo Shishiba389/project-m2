@@ -32,7 +32,8 @@ export const SHORTCUTS: [string, string][] = [
 
 /** The real file where there is one, so the export list shows what ships. */
 function Thumb({ asset }: { asset: Asset }) {
-  if (asset.url) return <img className="asset-image" src={asset.url} alt="" draggable={false} style={{ objectFit: "cover" }} />;
+  if (asset.thumbnailUrl || asset.url) return <img className="asset-image" src={asset.thumbnailUrl ?? asset.url} alt="" draggable={false}
+    loading="lazy" decoding="async" style={{ objectFit: "cover" }} />;
   return <div className={`product-placeholder product-${asset.kind}`} aria-hidden="true"><Package strokeWidth={1.25} /><span /></div>;
 }
 

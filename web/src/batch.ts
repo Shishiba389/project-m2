@@ -44,6 +44,7 @@ export type BatchSource = {
   width?: number;
   height?: number;
   error?: string;
+  thumbnail?: Blob;
 };
 
 // Nothing is resized in this pass, so the default suffix must not claim it was.
@@ -72,16 +73,49 @@ export function toSources(files: File[], startId = 1): BatchSource[] {
     });
 }
 
-/** Read oriented pixel dimensions once so preflight can plan memory accurately. */
-export async function inspectSources(sources: BatchSource[]): Promise<BatchSource[]> {
-  return Promise.all(sources.map(async (source) => {
+async function thumbnailOf(bitmap: ImageBitmap, maxEdge = 320) {
+  const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("2D canvas is unavailable");
+    context.drawImage(bitmap, 0, 0, width, height);
+    return canvas.convertToBlob({ type: "image/webp", quality: 0.82 });
+  }
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("2D canvas is unavailable");
+  context.drawImage(bitmap, 0, 0, width, height);
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob(
+    (blob) => blob ? resolve(blob) : reject(new Error("thumbnail encoding failed")), "image/webp", 0.82));
+}
+
+/** Read dimensions and make small previews with bounded decode concurrency. */
+export async function inspectSources(sources: BatchSource[], concurrency = Math.min(4, Math.max(2,
+  Math.floor((typeof navigator === "undefined" ? 4 : navigator.hardwareConcurrency || 4) / 2))),
+  onProgress: (done: number, total: number) => void = () => {}): Promise<BatchSource[]> {
+  const results = new Array<BatchSource>(sources.length);
+  let cursor = 0;
+  let done = 0;
+  const inspect = async () => {
+    while (true) {
+      const index = cursor++; if (index >= sources.length) return;
+      const source = sources[index];
     try {
       const bitmap = await createImageBitmap(source.file, { imageOrientation: "from-image" });
-      const measured = { ...source, width: bitmap.width, height: bitmap.height };
-      bitmap.close?.();
-      return measured;
-    } catch (error) { return { ...source, error: (error as Error).message || "could not decode image" }; }
-  }));
+      try {
+        let thumbnail: Blob | undefined;
+        try { thumbnail = await thumbnailOf(bitmap); } catch { /* Preview failure must not invalidate a decodable source. */ }
+        results[index] = { ...source, width: bitmap.width, height: bitmap.height, thumbnail };
+      } finally { bitmap.close?.(); }
+    } catch (error) { results[index] = { ...source, error: (error as Error).message || "could not decode image" }; }
+      onProgress(++done, sources.length);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, sources.length) }, inspect));
+  return results;
 }
 
 function normalisePath(path: string) {

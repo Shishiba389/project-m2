@@ -49,6 +49,7 @@ function useHistory(initial: Doc) {
 
 export function MinimaWorkspace() {
   const [assets, setAssets] = useState<Asset[]>([]);
+  const assetsRef = useRef<Asset[]>([]);
   const [presets, setPresets] = useState<Preset[]>(PRESETS);
   const [screen, setScreen] = useState<Screen>("import");
   const [imageScreen, setImageScreen] = useState<"gallery" | "editor">("gallery");
@@ -96,7 +97,8 @@ export function MinimaWorkspace() {
   const needsAttention = counts.Warning + counts.Error;
   const exportQueue = useMemo(() => assets.filter((asset) => statusOf(asset, target) !== "Pending"), [assets, target]);
   const visible = useMemo(() => filterAssets(assets, target, filter), [assets, target, filter]);
-  const scoped = useMemo(() => scope === "all" ? assets : scope === "selected" ? assets.filter((asset) => selected.includes(asset.id)) : assets.filter((asset) => asset.id === activeId), [assets, scope, selected, activeId]);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const scoped = useMemo(() => scope === "all" ? assets : scope === "selected" ? assets.filter((asset) => selectedSet.has(asset.id)) : assets.filter((asset) => asset.id === activeId), [assets, scope, selectedSet, activeId]);
   const flagged = useMemo(() => assets.filter((asset) => ["Warning", "Error"].includes(statusOf(asset, target))), [assets, target]);
 
   /** The only screen navigator. Modifiers that need the canvas force the editor. */
@@ -165,7 +167,8 @@ export function MinimaWorkspace() {
   }, [active, doc, setDoc]);
 
   const fixAssets = useCallback((ids: number[]) => {
-    setAssets((current) => current.map((asset) => ids.includes(asset.id) && !asset.corrupt ? { ...asset, fixed: true } : asset));
+    const idSet = new Set(ids);
+    setAssets((current) => current.map((asset) => idSet.has(asset.id) && !asset.corrupt ? { ...asset, fixed: true } : asset));
     touch(`Auto-fixed ${ids.length} image${ids.length === 1 ? "" : "s"}`);
   }, [touch]);
 
@@ -184,36 +187,61 @@ export function MinimaWorkspace() {
    * needs — it reports an empty MIME type for plenty of images.
    */
   const importFiles = useCallback(async (incoming: FileList | null) => {
-    const picked = await inspectSources(toSources(Array.from(incoming ?? []), Date.now()));
+    const allCandidates = toSources(Array.from(incoming ?? []), Date.now());
+    let preSkipped = 0;
+    const knownNames = new Set(assets.map((asset) => asset.name));
+    const candidates = policy === "skip" ? allCandidates.filter((source) => {
+      if (knownNames.has(source.name)) { preSkipped += 1; return false; }
+      knownNames.add(source.name); return true;
+    }) : allCandidates;
+    if (!candidates.length) {
+      if (preSkipped) touch(`Skipped ${preSkipped} duplicate image${preSkipped === 1 ? "" : "s"}`);
+      return;
+    }
+    setNotice(`Preparing 0 / ${candidates.length} images…`);
+    const picked = await inspectSources(candidates, undefined,
+      (done, total) => setNotice(`Preparing ${done} / ${total} images…`));
     if (!picked.length) return;
     setSources(picked);
-    const merged = mergeImport(assets, picked.map((source) => ({
-      name: source.name, file: source.file, url: URL.createObjectURL(source.file),
+    const incomingAssets = picked.map((source) => ({
+      name: source.name, file: source.file, url: source.error ? undefined : URL.createObjectURL(source.file),
+      thumbnailUrl: source.thumbnail ? URL.createObjectURL(source.thumbnail) : undefined,
       src: source.width && source.height ? { w: source.width, h: source.height } : undefined,
       corrupt: Boolean(source.error),
-    })), policy);
+    }));
+    const merged = mergeImport(assets, incomingAssets, policy);
+    const retainedUrls = new Set(merged.assets.flatMap((asset) => [asset.url, asset.thumbnailUrl].filter(Boolean)));
+    for (const asset of [...assets, ...incomingAssets]) {
+      if (asset.url && !retainedUrls.has(asset.url)) URL.revokeObjectURL(asset.url);
+      if (asset.thumbnailUrl && !retainedUrls.has(asset.thumbnailUrl)) URL.revokeObjectURL(asset.thumbnailUrl);
+    }
     setAssets(merged.assets);
-    setSelected(merged.assets.filter((asset) => asset.url).map((asset) => asset.id));
+    const importedUrls = new Set(incomingAssets.map((asset) => asset.url));
+    setSelected(merged.assets.filter((asset) => asset.url && importedUrls.has(asset.url)).map((asset) => asset.id));
     setActiveId(merged.assets[0]?.id ?? 0);
     setFork(summarise(picked));
-    touch(`Imported ${merged.added}${merged.skipped ? `, skipped ${merged.skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
+    const skipped = merged.skipped + preSkipped;
+    touch(`Imported ${merged.added}${skipped ? `, skipped ${skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
   }, [assets, policy, touch]);
 
   const confirmRemoval = useCallback(() => {
     if (!removeIntent) return;
     const doomed = removeIntent.keepSelected
-      ? assets.filter((asset) => !selected.includes(asset.id))
-      : assets.filter((asset) => selected.includes(asset.id));
+      ? assets.filter((asset) => !selectedSet.has(asset.id))
+      : assets.filter((asset) => selectedSet.has(asset.id));
     const ids = new Set(doomed.map((asset) => asset.id));
     const left = assets.filter((asset) => !ids.has(asset.id));
     // Object URLs pin the file in memory until they are revoked.
-    for (const asset of doomed) if (asset.url) URL.revokeObjectURL(asset.url);
+    for (const asset of doomed) {
+      if (asset.url) URL.revokeObjectURL(asset.url);
+      if (asset.thumbnailUrl) URL.revokeObjectURL(asset.thumbnailUrl);
+    }
     setAssets(left);
     setSelected([]);
     setRemoveIntent(null);
     if (left.length) setActiveId(left[0].id);
     touch(`Removed ${ids.size} image${ids.size === 1 ? "" : "s"}`);
-  }, [assets, removeIntent, selected, touch]);
+  }, [assets, removeIntent, selectedSet, touch]);
 
   const askRemoval = useCallback((keepSelected: boolean) => {
     const count = keepSelected ? assets.length - selected.length : selected.length;
@@ -258,6 +286,14 @@ export function MinimaWorkspace() {
   }, [doc, exportOptions, exportQueue, touch]);
 
   useEffect(() => { if (!assets.length && screen !== "batch") goto("import"); }, [assets.length, goto, screen]);
+
+  useEffect(() => { assetsRef.current = assets; }, [assets]);
+  useEffect(() => () => {
+    for (const asset of assetsRef.current) {
+      if (asset.url) URL.revokeObjectURL(asset.url);
+      if (asset.thumbnailUrl) URL.revokeObjectURL(asset.thumbnailUrl);
+    }
+  }, []);
 
   /* The theme choice has to reach the document, or the segmented control is a lie. */
   useEffect(() => {

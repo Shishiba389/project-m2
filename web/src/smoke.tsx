@@ -146,6 +146,19 @@ console.assert(makeZip([]).byteLength === 22, "the batch zip writer is reachable
     filter={emptyFilter} zoom={100} needsAttention={0} target={target}
     onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
   console.assert(bare.includes("product-placeholder"), "an asset with no file still renders the stand-in");
+
+  const thumb = { ...withFile, thumbnailUrl: "blob:thumb" };
+  const thumbHtml = renderToString(<Gallery assets={[thumb]} total={1} selected={[]} counts={counts}
+    filter={emptyFilter} zoom={100} needsAttention={0} target={target}
+    onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
+  console.assert(thumbHtml.includes('src="blob:thumb"') && thumbHtml.includes('loading="lazy"'), "gallery uses the generated lazy thumbnail");
+
+  const many = Array.from({ length: 500 }, (_, index) => ({ ...assets[0], id: 1000 + index, name: `bulk-${index}.png` }));
+  const manyHtml = renderToString(<Gallery assets={many} total={many.length} selected={[]} counts={{ ...counts, All: many.length }}
+    filter={emptyFilter} zoom={100} needsAttention={0} target={target}
+    onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
+  console.assert((manyHtml.match(/class="asset-card /g) ?? []).length === 120, "gallery mounts only the first 120 cards");
+  console.assert(manyHtml.includes("Load 120 more"), "large galleries expose progressive loading");
 }
 // The editor's export renders at the document's canvas size into its frame,
 // so the geometry the dialog promises is the geometry it writes.
