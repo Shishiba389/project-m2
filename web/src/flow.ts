@@ -96,6 +96,10 @@ export type Asset = {
   name: string;
   kind: "shoe" | "beauty" | "fashion" | "bottle";
   format: Format;
+  /** The dropped file, when there is one. */
+  file?: File;
+  /** Object URL for the file. Owned by the app, revoked when the asset goes. */
+  url?: string;
   /** Source pixel dimensions — drives the aspect-mismatch warning. */
   src: { w: number; h: number };
   /** Set once a preset has been applied to this asset. */
@@ -196,7 +200,7 @@ export function outputName(asset: Asset, format: Format, suffix: string, keepNam
  */
 export function mergeImport(
   existing: Asset[],
-  incoming: { name: string; src?: { w: number; h: number } }[],
+  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string }[],
   policy: DupPolicy,
 ): { assets: Asset[]; added: number; skipped: number; renamed: number } {
   const assets = [...existing];
@@ -212,6 +216,8 @@ export function mergeImport(
       name: file.name,
       kind: kinds[index % kinds.length],
       format: formatOf(file.name),
+      file: file.file,
+      url: file.url,
       src: file.src ?? { w: 1801, h: 2600 },
       processed: false,
       overflow: false,
@@ -264,24 +270,6 @@ function nextFreeName(name: string, taken: Set<string>) {
 /** Object box in percent of the canvas, so it survives any zoom level. */
 export type Box = { x: number; y: number; w: number; h: number };
 
-/** Size the object for the chosen fit mode against the safe rect. */
-export function fitBox(fit: Fit, srcRatio: number, canvasRatio: number, safeX: number, safeY: number): Box {
-  const availW = 100 - 2 * safeX;
-  const availH = 100 - 2 * safeY;
-  if (fit === "Stretch") return anchor("center", { x: 0, y: 0, w: availW, h: availH }, safeX, safeY);
-
-  // Width of an object whose source ratio is srcRatio when it is `h` percent tall.
-  const widthAt = (h: number) => (h * srcRatio) / canvasRatio;
-  let h = availH;
-  let w = widthAt(h);
-  const overflows = w > availW;
-  if (fit === "Fit" ? overflows : !overflows) {
-    w = availW;
-    h = (w * canvasRatio) / srcRatio;
-  }
-  return anchor("center", { x: 0, y: 0, w, h }, safeX, safeY);
-}
-
 /** Place a sized box at one of the nine anchors inside the safe rect. */
 export function anchor(align: Align, box: Box, safeX: number, safeY: number): Box {
   const [vertical, horizontal] = splitAlign(align);
@@ -299,6 +287,103 @@ function splitAlign(align: Align): ["top" | "middle" | "bottom", "left" | "cente
   const [vertical, horizontal] = align.split("-") as ["top" | "bottom", "left" | "right"];
   return [vertical, horizontal];
 }
+
+/**
+ * The eight handles of the placeholder frame: four corners and four edges.
+ * Corner handles move two edges, edge handles move one.
+ */
+export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
+export const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+/** Nothing smaller than this, in percent of the canvas, stays grabbable. */
+const MIN_SIDE = 4;
+
+/**
+ * Resize the frame by dragging one handle. Deltas are in percent of the
+ * canvas. Each edge is clamped so the frame cannot invert or shrink below
+ * MIN_SIDE, and `ratio` (w/h) keeps the frame proportional when the aspect
+ * lock is on.
+ */
+export function resizeBox(box: Box, handle: Handle, dx: number, dy: number, ratio?: number): Box {
+  const right = box.x + box.w;
+  const bottom = box.y + box.h;
+  let { x, y, w, h } = box;
+
+  if (handle.includes("w")) {
+    x = Math.min(box.x + dx, right - MIN_SIDE);
+    w = right - x;
+  }
+  if (handle.includes("e")) {
+    w = Math.max(MIN_SIDE, box.w + dx);
+  }
+  if (handle.includes("n")) {
+    y = Math.min(box.y + dy, bottom - MIN_SIDE);
+    h = bottom - y;
+  }
+  if (handle.includes("s")) {
+    h = Math.max(MIN_SIDE, box.h + dy);
+  }
+
+  if (ratio && ratio > 0) {
+    // An edge handle drives the other axis; a corner follows the wider drag.
+    const vertical = handle === "n" || handle === "s";
+    const horizontal = handle === "e" || handle === "w";
+    if (vertical || (!horizontal && Math.abs(dy) > Math.abs(dx))) {
+      w = Math.max(MIN_SIDE, h * ratio);
+      if (handle.includes("w")) x = right - w;
+    } else {
+      h = Math.max(MIN_SIDE, w / ratio);
+      if (handle.includes("n")) y = bottom - h;
+    }
+  }
+  return { x, y, w, h };
+}
+
+/**
+ * The frame expressed as margins from each canvas edge, which is how a print
+ * spec is written. Reading and writing the same rect from either side keeps
+ * the numeric fields and the handles in agreement.
+ */
+export type Margins = { top: number; right: number; bottom: number; left: number };
+
+export function marginsOf(box: Box): Margins {
+  return {
+    top: box.y,
+    left: box.x,
+    right: 100 - box.x - box.w,
+    bottom: 100 - box.y - box.h,
+  };
+}
+
+export function boxFromMargins(margins: Margins): Box {
+  const left = clampMargin(margins.left);
+  const top = clampMargin(margins.top);
+  const right = clampMargin(margins.right);
+  const bottom = clampMargin(margins.bottom);
+  return {
+    x: left,
+    y: top,
+    w: Math.max(MIN_SIDE, 100 - left - right),
+    h: Math.max(MIN_SIDE, 100 - top - bottom),
+  };
+}
+
+const clampMargin = (value: number) =>
+  Number.isFinite(value) ? Math.min(100 - MIN_SIDE, Math.max(0, value)) : 0;
+
+/** Keep a frame inside the canvas after a move. */
+export function clampBox(box: Box): Box {
+  const w = Math.min(100, Math.max(MIN_SIDE, box.w));
+  const h = Math.min(100, Math.max(MIN_SIDE, box.h));
+  return {
+    w, h,
+    x: Math.min(100 - w, Math.max(0, box.x)),
+    y: Math.min(100 - h, Math.max(0, box.y)),
+  };
+}
+
+/** The frame spanning the whole canvas, for "fill the canvas". */
+export const fullBox = (): Box => ({ x: 0, y: 0, w: 100, h: 100 });
 
 export type Snapping = { safe: boolean; grid: boolean };
 
@@ -328,11 +413,6 @@ export function snapBox(box: Box, safeX: number, safeY: number, snapping: Snappi
   return { ...box, x: pull(box.x, targets(safeX, box.w)), y: pull(box.y, targets(safeY, box.h)) };
 }
 
-/** Scale of the placed object relative to its source pixels, as a percentage. */
-export function objectScale(box: Box, preset: Preset, asset: Asset) {
-  return Math.round(((box.w / 100) * preset.width * 100) / asset.src.w);
-}
-
 /* ---------------------------------------------------------------- document */
 
 /** Everything the resize step owns. Undo/redo snapshots exactly this. */
@@ -356,15 +436,19 @@ export type Doc = {
 export const srcRatio = (asset: Asset) => asset.src.w / asset.src.h;
 export const megabytes = (asset: Asset) => sourceBytes(asset) / 1_048_576;
 
-export function docFromPreset(preset: Preset, asset: Asset): Doc {
-  const canvasRatio = preset.width / preset.height;
+export function docFromPreset(preset: Preset): Doc {
   return {
-    presetId: preset.id, width: preset.width, height: preset.height, lock: true, ratio: canvasRatio,
+    presetId: preset.id, width: preset.width, height: preset.height, lock: true,
+    ratio: preset.width / preset.height,
     fit: preset.fit, align: preset.align, safeX: preset.safeX, safeY: preset.safeY,
     background: preset.background, flipH: false, flipV: false,
-    box: fitBox(preset.fit, srcRatio(asset), canvasRatio, preset.safeX, preset.safeY),
+    box: safeBox(preset.safeX, preset.safeY),
   };
 }
+
+/** The frame a preset implies: its safe area. */
+export const safeBox = (safeX: number, safeY: number): Box =>
+  ({ x: safeX, y: safeY, w: 100 - 2 * safeX, h: 100 - 2 * safeY });
 
 /** The live resize target: the preset row with the inspector's edits layered on. */
 export function docTarget(doc: Doc, presets: Preset[]): Preset {
@@ -469,16 +553,6 @@ export function demo() {
   console.assert(ratioLabel(1000, 1731) === "≈ 15 : 26", "a pair that does not land close is marked approximate");
   console.assert(ratioLabel(1200, 1600) === "3 : 4", "a reducible pair stays exact");
 
-  // Fit sizing stays inside the safe rect; Fill covers it.
-  const canvasRatio = zalando.width / zalando.height;
-  const wide = fitBox("Fit", 2, canvasRatio, zalando.safeX, zalando.safeY);
-  console.assert(wide.w <= 100 - 2 * zalando.safeX + 0.01, "Fit never exceeds the safe width");
-  console.assert(wide.h <= 100 - 2 * zalando.safeY + 0.01, "Fit never exceeds the safe height");
-  const filled = fitBox("Fill", 2, canvasRatio, zalando.safeX, zalando.safeY);
-  console.assert(filled.h >= 100 - 2 * zalando.safeY - 0.01, "Fill covers the safe height");
-  const stretched = fitBox("Stretch", 2, canvasRatio, zalando.safeX, zalando.safeY);
-  console.assert(Math.abs(stretched.w - (100 - 2 * zalando.safeX)) < 0.01, "Stretch matches the safe rect exactly");
-
   // Anchors land on the safe-area edges.
   const box: Box = { x: 0, y: 0, w: 40, h: 40 };
   console.assert(anchor("top-left", box, 10, 5).x === 10, "left anchor sits on the safe inset");
@@ -486,6 +560,45 @@ export function demo() {
   console.assert(anchor("bottom-right", box, 10, 5).x === 50, "right anchor mirrors the inset");
   console.assert(anchor("center", box, 10, 5).x === 30, "centre ignores the inset");
   console.assert(anchor("right", box, 10, 5).y === 30, "single-axis alignment centres the other axis");
+
+  // The placeholder frame: eight handles, margins, clamping.
+  const frame: Box = { x: 20, y: 20, w: 60, h: 60 };
+  console.assert(resizeBox(frame, "e", 10, 0).w === 70, "the east handle widens");
+  console.assert(resizeBox(frame, "e", 10, 0).x === 20, "and leaves the left edge alone");
+  const west = resizeBox(frame, "w", -10, 0);
+  console.assert(west.x === 10 && west.w === 70, "the west handle moves the left edge and keeps the right");
+  const north = resizeBox(frame, "n", 0, -10);
+  console.assert(north.y === 10 && north.h === 70, "the north handle moves the top edge");
+  console.assert(resizeBox(frame, "s", 0, 10).h === 70, "the south handle grows downward");
+  const corner = resizeBox(frame, "se", 10, 20);
+  console.assert(corner.w === 70 && corner.h === 80, "a corner moves both edges");
+  console.assert(resizeBox(frame, "nw", -10, -10).x === 10, "the north-west corner moves both origins");
+  console.assert(resizeBox(frame, "e", -200, 0).w === 4, "a frame cannot shrink below the minimum");
+  console.assert(resizeBox(frame, "w", 200, 0).w === 4, "and cannot invert when dragged past itself");
+  console.assert(resizeBox(frame, "w", 200, 0).x === 76, "the origin stops at the opposite edge");
+  // With the aspect lock, the dominant axis drives the other.
+  const locked = resizeBox(frame, "se", 20, 0, 1);
+  console.assert(Math.abs(locked.w - locked.h) < 0.001, "a locked corner stays square for a 1:1 ratio");
+  const lockedEdge = resizeBox(frame, "s", 0, 20, 2);
+  console.assert(Math.abs(lockedEdge.w / lockedEdge.h - 2) < 0.001, "a locked edge honours the ratio");
+
+  // Margins are the same rect read from the other side.
+  const margins = marginsOf(frame);
+  console.assert(margins.top === 20 && margins.left === 20, "margins read from the origin");
+  console.assert(margins.right === 20 && margins.bottom === 20, "and from the far edges");
+  const roundTrip = boxFromMargins(margins);
+  console.assert(roundTrip.x === frame.x && roundTrip.w === frame.w, "margins round-trip back to the frame");
+  console.assert(boxFromMargins({ top: 0, right: 0, bottom: 0, left: 0 }).w === 100, "zero margins span the canvas");
+  console.assert(boxFromMargins({ top: 60, right: 0, bottom: 60, left: 0 }).h === 4, "opposing margins stop at the minimum");
+  console.assert(boxFromMargins({ top: -5, right: 0, bottom: 0, left: 0 }).y === 0, "a negative margin is clamped");
+
+  console.assert(clampBox({ x: -10, y: 0, w: 50, h: 50 }).x === 0, "a frame dragged off the left is pulled back");
+  console.assert(clampBox({ x: 80, y: 0, w: 50, h: 50 }).x === 50, "and off the right too");
+  console.assert(clampBox({ x: 0, y: 0, w: 200, h: 50 }).w === 100, "a frame cannot exceed the canvas");
+  console.assert(fullBox().w === 100 && fullBox().x === 0, "the full frame spans the canvas");
+  console.assert(HANDLES.length === 8, "eight handles, not four");
+  console.assert(safeBox(10, 5).x === 10 && safeBox(10, 5).w === 80, "a preset frame is its safe area");
+  console.assert(docFromPreset(zalando).box.w === 100 - 2 * zalando.safeX, "a loaded preset frames its safe area");
 
   // Snapping only bites near a target, and only for the guides that are on.
   console.assert(snapBox({ x: 10.5, y: 50, w: 40, h: 40 }, 10, 5).x === 10, "near edge snaps");
