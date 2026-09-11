@@ -13,6 +13,8 @@
  * Everything above `renderOne` is pure and checked by `demo()`.
  */
 
+import { begin } from "@/src/selfcheck";
+
 export type OutFormat = "png" | "jpg" | "webp";
 
 export type BatchOutput = {
@@ -295,6 +297,7 @@ export function downloadZip(zip: Uint8Array, filename = "minima-batch.zip") {
 /* --------------------------------------------------------------------- demo */
 
 export function demo() {
+  const finish = begin();
   const file = (name: string, path = name, bytes = 1000) =>
     ({ id: 0, name, path, bytes, file: null as unknown as File }) as BatchSource;
 
@@ -305,14 +308,14 @@ export function demo() {
     { ...file("b.jpg", "b.jpg"), id: 3 },
   ];
   const kept = planNames(sources, { ...defaultOutput, format: "webp" });
-  console.assert(kept.get(1) === "shoes/a_resized.webp", "the subfolder is preserved");
-  console.assert(kept.get(2) === "bags/a_resized.webp", "a same-named file in another folder keeps its own path");
-  console.assert(kept.get(3) === "b_resized.webp", "a root file stays at the root");
+  console.assert(kept.get(1) === "shoes/a_converted.webp", "the subfolder is preserved");
+  console.assert(kept.get(2) === "bags/a_converted.webp", "a same-named file in another folder keeps its own path");
+  console.assert(kept.get(3) === "b_converted.webp", "a root file stays at the root");
   const flat = planNames(sources, { ...defaultOutput, flatten: true });
-  console.assert(flat.get(1) === "a_resized.png", "flattening drops the folder");
-  console.assert(flat.get(2) === "a_resized (2).png", "and resolves the collision it creates");
-  console.assert(planNames(sources, { ...defaultOutput, suffix: "" }).get(3) === "b_resized.png".replace("_resized", ""), "an empty suffix is allowed");
-  console.assert(planNames(sources, { ...defaultOutput, format: "jpg" }).get(3) === "b_resized.jpg", "jpg maps to a .jpg extension");
+  console.assert(flat.get(1) === "a_converted.png", "flattening drops the folder");
+  console.assert(flat.get(2) === "a_converted (2).png", "and resolves the collision it creates");
+  console.assert(planNames(sources, { ...defaultOutput, suffix: "" }).get(3) === "b_converted.png".replace("_converted", ""), "an empty suffix is allowed");
+  console.assert(planNames(sources, { ...defaultOutput, format: "jpg" }).get(3) === "b_converted.jpg", "jpg maps to a .jpg extension");
 
   // Summary: folder count and nesting, for the fork dialog.
   const summary = summarise([
@@ -365,7 +368,7 @@ export function demo() {
     "higher quality estimates larger",
   );
 
-  console.log("batch.ts: all checks passed");
+  finish("batch.ts");
 }
 
 if (typeof process !== "undefined" && process.argv?.[1]?.includes("batch")) demo();

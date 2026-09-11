@@ -8,6 +8,8 @@
  * See design-system/minima-resize/pages/flow.md for the wiring table.
  */
 
+import { begin } from "@/src/selfcheck";
+
 export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
 export type Status = "Completed" | "Pending" | "Warning" | "Error";
 export type Scope = "current" | "selected" | "all";
@@ -482,6 +484,7 @@ export function backTarget(screen: Screen, hasAssets: boolean): Screen | null {
 /* --------------------------------------------------------------------- demo */
 
 export function demo() {
+  const finish = begin();
   const zalando = presetById("zalando");
   const square = presetById("amazon");
   const base: Asset = { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false };
@@ -621,7 +624,7 @@ export function demo() {
   console.assert(backTarget("import", true) === null, "import is a root");
   console.assert(backTarget("gallery", true) === null, "gallery is a root, so Back is hidden rather than a no-op");
 
-  console.log("flow.ts: all checks passed");
+  finish("flow.ts");
 }
 
 if (typeof process !== "undefined" && process.argv?.[1]?.includes("flow")) demo();
