@@ -39,7 +39,7 @@ export function ImportForkDialog({ summary, onBatch, onEditor }: {
         <button className={`fork-option ${many ? "recommended" : ""}`} onClick={onBatch}>
           <Layers aria-hidden="true" />
           <strong>Batch convert</strong>
-          <span>Re-encode every image at its own size and download them as a zip. Format, naming and subfolders in one pass.</span>
+          <span>Resize every image to one exact target and download a zip. Format, naming and subfolders in one pass.</span>
           {many && <em>Suggested for {summary.images}</em>}
         </button>
         <button className={`fork-option ${many ? "" : "recommended"}`} onClick={onEditor}>
@@ -97,7 +97,7 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
       <header className="batch-head">
         <div>
           <h1>Batch convert</h1>
-          <p>Every file re-encoded in this browser at its own size, then downloaded
+          <p>Every file resized by MINIMA's linear-light Catmull–Rom pipeline, then downloaded
             as a zip. Nothing is uploaded.</p>
         </div>
         <dl className="batch-source">
@@ -117,9 +117,15 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
             </figure>)}
             {sources.length > previews.length && <span className="source-more">+{sources.length - previews.length}</span>}
           </div>
-          <p className="batch-hint">Resize geometry is not set here. Target framing is
-            being built as its own engine; this pass handles format, naming and
-            folder structure, and each image keeps its own pixel size.</p>
+          <div className="dimension-row">
+            <input aria-label="Target width" type="number" min={1} max={20000} value={output.width}
+              onChange={(event) => setOutput((current) => ({ ...current, width: Number(event.target.value) }))} />
+            <span>×</span>
+            <input aria-label="Target height" type="number" min={1} max={20000} value={output.height}
+              onChange={(event) => setOutput((current) => ({ ...current, height: Number(event.target.value) }))} />
+            <span>px</span>
+          </div>
+          <p className="batch-hint">Every source is transformed to this exact pixel size. Batch mode does not crop or position subjects.</p>
         </section>
 
         <section className="batch-step">
@@ -133,6 +139,19 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
             <Slider value={[output.quality]} min={40} max={100} step={1}
               onValueChange={([value]) => setOutput((current) => ({ ...current, quality: value }))} />
           </>}
+          <label className="batch-field"><span className="field-label">DPI metadata</span>
+            <input className="export-input" type="number" min={1} max={2400} value={output.dpi}
+              onChange={(event) => setOutput((current) => ({ ...current, dpi: Number(event.target.value) }))} />
+          </label>
+          <label className="batch-field"><span className="field-label">Maximum file size (KB, optional)</span>
+            <input className="export-input" type="number" min={1} placeholder="No limit"
+              value={output.maxBytes ? Math.round(output.maxBytes / 1024) : ""}
+              onChange={(event) => setOutput((current) => ({ ...current, maxBytes: event.target.value ? Number(event.target.value) * 1024 : null }))} />
+          </label>
+          {output.format === "jpg" && <label className="batch-field"><span className="field-label">JPEG background</span>
+            <input className="export-input" type="color" value={output.jpegBackground}
+              onChange={(event) => setOutput((current) => ({ ...current, jpegBackground: event.target.value }))} />
+          </label>}
           <label className="batch-field"><span className="field-label">Filename suffix</span>
             <input className="export-input" value={output.suffix} placeholder="none"
               onChange={(event) => setOutput((current) => ({ ...current, suffix: event.target.value }))} />

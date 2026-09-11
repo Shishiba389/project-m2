@@ -11,8 +11,10 @@
  * target framing, which is being built as its own engine.
  */
 import { begin } from "@/src/selfcheck";
-import { downloadZip, makeZip, mimeFor, type OutFormat, type ZipEntry } from "@/src/batch";
+import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
 import { outputName, type Asset, type Doc, type Format } from "@/src/flow";
+import { resizeRgba } from "@/src/resize-core";
+import { encodeOutput } from "@/src/output-engine";
 
 export type Rect = { x: number; y: number; w: number; h: number };
 
@@ -24,6 +26,7 @@ export type FrameSpec = {
   /** The placeholder frame, in percent of the canvas. */
   box: Rect;
   fit: "contain" | "cover" | "fill";
+  align: { horizontal: "left" | "center" | "right"; vertical: "top" | "center" | "bottom" };
   flipH: boolean;
   flipV: boolean;
 };
@@ -34,6 +37,10 @@ export const specFromDoc = (doc: Doc): FrameSpec => ({
   background: doc.background,
   box: doc.box,
   fit: doc.fit === "Fit" ? "contain" : doc.fit === "Fill" ? "cover" : "fill",
+  align: {
+    horizontal: doc.align?.includes("left") ? "left" : doc.align?.includes("right") ? "right" : "center",
+    vertical: doc.align?.includes("top") ? "top" : doc.align?.includes("bottom") ? "bottom" : "center",
+  },
   flipH: doc.flipH,
   flipV: doc.flipV,
 });
@@ -54,14 +61,16 @@ export function framePx(spec: FrameSpec): Rect {
  * contain fits it whole, cover fills and overflows (the frame clips it), fill
  * distorts it to the frame.
  */
-export function fitInto(srcW: number, srcH: number, frame: Rect, fit: FrameSpec["fit"]): Rect {
+export function fitInto(srcW: number, srcH: number, frame: Rect, fit: FrameSpec["fit"], align: FrameSpec["align"] = { horizontal: "center", vertical: "center" }): Rect {
   if (fit === "fill" || srcW <= 0 || srcH <= 0) return { ...frame };
   const scale = fit === "cover"
     ? Math.max(frame.w / srcW, frame.h / srcH)
     : Math.min(frame.w / srcW, frame.h / srcH);
   const w = srcW * scale;
   const h = srcH * scale;
-  return { x: frame.x + (frame.w - w) / 2, y: frame.y + (frame.h - h) / 2, w, h };
+  const x = align.horizontal === "left" ? frame.x : align.horizontal === "right" ? frame.x + frame.w - w : frame.x + (frame.w - w) / 2;
+  const y = align.vertical === "top" ? frame.y : align.vertical === "bottom" ? frame.y + frame.h - h : frame.y + (frame.h - h) / 2;
+  return { x, y, w, h };
 }
 
 /** An export's file extension, which TIFF cannot be: canvas cannot encode it. */
@@ -70,19 +79,27 @@ export const encodableFormat = (format: Format): OutFormat =>
 
 /* ------------------------------------------------------------------ browser */
 
-export async function renderFramed(file: File, spec: FrameSpec, format: OutFormat, quality: number): Promise<Uint8Array> {
-  const bitmap = await createImageBitmap(file);
+export async function renderFramed(file: File, spec: FrameSpec, format: OutFormat, quality: number,
+  metadata: { dpi?: number; maxBytes?: number | null } = {}): Promise<Uint8Array> {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   try {
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = bitmap.width;
+    sourceCanvas.height = bitmap.height;
+    const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    if (!sourceContext) throw new Error("2D canvas is unavailable");
+    sourceContext.drawImage(bitmap, 0, 0);
+
     const canvas = document.createElement("canvas");
     canvas.width = spec.width;
     canvas.height = spec.height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas is unavailable");
 
-    context.fillStyle = spec.background;
-    context.fillRect(0, 0, spec.width, spec.height);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
+    if (spec.background !== "transparent" || format === "jpg") {
+      context.fillStyle = spec.background === "transparent" ? "#ffffff" : spec.background;
+      context.fillRect(0, 0, spec.width, spec.height);
+    }
 
     const frame = framePx(spec);
     context.save();
@@ -97,14 +114,24 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
       context.scale(spec.flipH ? -1 : 1, spec.flipV ? -1 : 1);
       context.translate(-cx, -cy);
     }
-    const dest = fitInto(bitmap.width, bitmap.height, frame, spec.fit);
-    context.drawImage(bitmap, dest.x, dest.y, dest.w, dest.h);
+    const dest = fitInto(bitmap.width, bitmap.height, frame, spec.fit, spec.align);
+    const renderWidth = Math.max(1, Math.round(dest.w));
+    const renderHeight = Math.max(1, Math.round(dest.h));
+    const sourcePixels = sourceContext.getImageData(0, 0, bitmap.width, bitmap.height);
+    const resized = resizeRgba({ width: bitmap.width, height: bitmap.height, data: sourcePixels.data }, renderWidth, renderHeight);
+    const resizedCanvas = document.createElement("canvas");
+    resizedCanvas.width = renderWidth;
+    resizedCanvas.height = renderHeight;
+    const imageData = resizedCanvas.getContext("2d")!.createImageData(renderWidth, renderHeight);
+    imageData.data.set(resized.data);
+    resizedCanvas.getContext("2d")!.putImageData(imageData, 0, 0);
+    context.drawImage(resizedCanvas, Math.round(dest.x), Math.round(dest.y));
     context.restore();
 
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, mimeFor(format), format === "png" ? undefined : quality / 100));
-    if (!blob) throw new Error(`${format.toUpperCase()} encoding failed`);
-    return new Uint8Array(await blob.arrayBuffer());
+    return encodeOutput(canvas, {
+      format, quality, dpi: metadata.dpi ? { x: metadata.dpi, y: metadata.dpi } : undefined,
+      maxBytes: metadata.maxBytes ?? undefined,
+    });
   } finally {
     bitmap.close?.();
   }
@@ -127,7 +154,7 @@ export const EXPORT_ZIP = "minima-export.zip";
 export async function runExport(
   queue: Asset[],
   spec: FrameSpec,
-  naming: { format: Format; quality: number; suffix: string; keepName: boolean },
+  naming: { format: Format; quality: number; suffix: string; keepName: boolean; dpi?: number; maxBytes?: number | null },
   onProgress: (progress: ExportProgress) => void,
   shouldStop: () => boolean = () => false,
 ): Promise<{ zip: Uint8Array; progress: ExportProgress; stopped: boolean }> {
@@ -142,7 +169,8 @@ export async function runExport(
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
       if (!asset.file) throw new Error("no source file");
-      const data = await renderFramed(asset.file, spec, format, naming.quality);
+      const assetSpec = asset.layout ? { ...spec, box: asset.layout.frame } : spec;
+      const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
       let name = outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
       let n = 2;
       while (taken.has(name.toLowerCase())) {
@@ -168,7 +196,8 @@ export function demo() {
   const finish = begin();
   const spec: FrameSpec = {
     width: 1000, height: 2000, background: "#fff",
-    box: { x: 10, y: 20, w: 80, h: 60 }, fit: "contain", flipH: false, flipV: false,
+    box: { x: 10, y: 20, w: 80, h: 60 }, fit: "contain",
+    align: { horizontal: "center", vertical: "center" }, flipH: false, flipV: false,
   };
 
   const frame = framePx(spec);

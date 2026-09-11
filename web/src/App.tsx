@@ -12,9 +12,10 @@ import {
 import {
   downloadZip, EXPORT_ZIP, runExport, specFromDoc, type ExportProgress as ExportRunProgress,
 } from "@/src/exportrun";
-import { summarise, toSources, type BatchSource } from "@/src/batch";
+import { inspectSources, summarise, toSources, type BatchSource } from "@/src/batch";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
+import { applyRecipe, applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
 import {
   defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
   ProductPlaceholder, Review, SettingsScreen, type CompareView, type Guides, type Theme,
@@ -138,24 +139,30 @@ export function MinimaWorkspace() {
     touch(`Preset ${presetById(id, presets).label} loaded`);
   }, [presets, setDoc, touch]);
 
-  /** The resize step commits: scoped assets become processed, statuses recompute. */
+  /** Build a versioned recipe and calculate an independent layout per image. */
   const runApply = useCallback(() => {
     if (processing || !scoped.length) return;
     setProcessing(true);
-    setProgress(8);
-    const ids = scoped.map((asset) => asset.id);
-    const overflow = doc.fit !== "Fit";
-    const timer = window.setInterval(() => setProgress((value) => {
-      if (value < 100) return Math.min(100, value + 12);
-      window.clearInterval(timer);
-      setProcessing(false);
-      setAssets((current) => current.map((asset) => ids.includes(asset.id)
-        ? { ...asset, processed: true, overflow, fixed: false }
-        : asset));
-      touch(`Applied to ${ids.length} image${ids.length === 1 ? "" : "s"}`);
-      return 100;
-    }), 110);
-  }, [doc.fit, processing, scoped, touch]);
+    setProgress(25);
+    const ids = new Set(scoped.map((asset) => asset.id));
+    const recipe = createRecipe(doc);
+    setAssets((current) => {
+      const calculated = applyRecipeToAssets(current.filter((asset) => ids.has(asset.id)), recipe);
+      const byId = new Map(calculated.map((asset) => [asset.id, asset]));
+      return current.map((asset) => byId.get(asset.id) ?? asset);
+    });
+    setProgress(100); setProcessing(false);
+    touch(`Recipe v${recipe.version} applied to ${ids.size} image${ids.size === 1 ? "" : "s"}`);
+  }, [doc, processing, scoped, touch]);
+
+  const setActiveBox = useCallback((box: Doc["box"]) => {
+    setDoc((current) => ({ ...current, box }));
+    if (!active) return;
+    const recipe = createRecipe({ ...doc, box });
+    setAssets((current) => current.map((asset) => asset.id === active.id
+      ? { ...asset, processed: true, fixed: false, layout: applyRecipe(asset, recipe, box) }
+      : asset));
+  }, [active, doc, setDoc]);
 
   const fixAssets = useCallback((ids: number[]) => {
     setAssets((current) => current.map((asset) => ids.includes(asset.id) && !asset.corrupt ? { ...asset, fixed: true } : asset));
@@ -176,12 +183,14 @@ export function MinimaWorkspace() {
    * not enough. toSources also filters by extension, which a directory picker
    * needs — it reports an empty MIME type for plenty of images.
    */
-  const importFiles = useCallback((incoming: FileList | null) => {
-    const picked = toSources(Array.from(incoming ?? []), Date.now());
+  const importFiles = useCallback(async (incoming: FileList | null) => {
+    const picked = await inspectSources(toSources(Array.from(incoming ?? []), Date.now()));
     if (!picked.length) return;
     setSources(picked);
     const merged = mergeImport(assets, picked.map((source) => ({
       name: source.name, file: source.file, url: URL.createObjectURL(source.file),
+      src: source.width && source.height ? { w: source.width, h: source.height } : undefined,
+      corrupt: Boolean(source.error),
     })), policy);
     setAssets(merged.assets);
     setSelected(merged.assets.filter((asset) => asset.url).map((asset) => asset.id));
@@ -375,7 +384,7 @@ export function MinimaWorkspace() {
         onReview={() => goto("review")} onRemove={askRemoval} />}
       {screen === "editor" && hasActive && <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onBox={(box) => setDoc((current) => ({ ...current, box }))} onSplit={setSplitAt} onChoose={openEditor}
+        onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}

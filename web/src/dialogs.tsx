@@ -15,10 +15,12 @@ export type ExportOptions = {
   profile: string;
   keepName: boolean;
   suffix: string;
+  dpi: number;
+  maxBytes: number | null;
 };
 
 export const defaultExportOptions: ExportOptions = {
-  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized",
+  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null,
 };
 
 export const SHORTCUTS: [string, string][] = [
@@ -61,8 +63,15 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
         <label className="field-label">Color profile</label>
         <Select value={options.profile} onValueChange={(value) => onOptions({ ...options, profile: value })}>
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="srgb">sRGB (default)</SelectItem><SelectItem value="p3">Display P3</SelectItem><SelectItem value="adobe">Adobe RGB (1998)</SelectItem></SelectContent>
+          <SelectContent><SelectItem value="srgb">sRGB (browser output)</SelectItem></SelectContent>
         </Select>
+        <label className="field-label" htmlFor="dpi">DPI metadata</label>
+        <input id="dpi" className="export-input" type="number" min={1} max={2400} value={options.dpi}
+          onChange={(event) => onOptions({ ...options, dpi: Number(event.target.value) })} />
+        <label className="field-label" htmlFor="max-size">Maximum file size (KB, optional)</label>
+        <input id="max-size" className="export-input" type="number" min={1} placeholder="No limit"
+          value={options.maxBytes ? Math.round(options.maxBytes / 1024) : ""}
+          onChange={(event) => onOptions({ ...options, maxBytes: event.target.value ? Number(event.target.value) * 1024 : null })} />
         <label className="check-row">
           <Checkbox checked={options.keepName} onCheckedChange={(value) => onOptions({ ...options, keepName: Boolean(value) })} />
           Keep original filename

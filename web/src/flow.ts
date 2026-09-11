@@ -9,6 +9,7 @@
  */
 
 import { begin } from "@/src/selfcheck";
+import type { LayoutResult } from "@/src/editor-engine";
 
 export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
 export type Status = "Completed" | "Pending" | "Warning" | "Error";
@@ -112,6 +113,8 @@ export type Asset = {
   fixed: boolean;
   /** Unreadable file; never resolvable by re-running the preset. */
   corrupt: boolean;
+  /** Independent result produced by EditorModeEngine for this image. */
+  layout?: LayoutResult;
 };
 
 /** Ratio drift above this reads as a real mismatch rather than rounding. */
@@ -126,6 +129,10 @@ export function statusOf(asset: Asset, preset: Preset): Status {
 /** Why an asset is warned, so Review can explain it and auto-fix can clear it. */
 export function warningReason(asset: Asset, preset: Preset): WarningReason | null {
   if (asset.corrupt || !asset.processed || asset.fixed) return null;
+  if (asset.layout) {
+    if (!asset.layout.warnings.length) return null;
+    return asset.layout.warnings.some((warning) => warning.code === "CLIPPING" || warning.code === "SAFE_AREA") ? "safe" : "aspect";
+  }
   if (mismatch(asset, preset)) return "aspect";
   if (asset.overflow) return "safe";
   return null;
@@ -202,7 +209,7 @@ export function outputName(asset: Asset, format: Format, suffix: string, keepNam
  */
 export function mergeImport(
   existing: Asset[],
-  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string }[],
+  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; corrupt?: boolean }[],
   policy: DupPolicy,
 ): { assets: Asset[]; added: number; skipped: number; renamed: number } {
   const assets = [...existing];
@@ -224,7 +231,7 @@ export function mergeImport(
       processed: false,
       overflow: false,
       fixed: false,
-      corrupt: false,
+      corrupt: Boolean(file.corrupt),
     };
     const clash = taken.has(file.name);
 

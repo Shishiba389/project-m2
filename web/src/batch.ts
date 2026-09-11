@@ -14,16 +14,23 @@
  */
 
 import { begin } from "@/src/selfcheck";
+import { encodeOutput } from "@/src/output-engine";
+import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
 
 export type OutFormat = "png" | "jpg" | "webp";
 
 export type BatchOutput = {
+  width: number;
+  height: number;
   format: OutFormat;
   /** 1-100, ignored for PNG. */
   quality: number;
   suffix: string;
   /** Flatten subfolders into the zip root instead of preserving them. */
   flatten: boolean;
+  dpi: number;
+  maxBytes: number | null;
+  jpegBackground: string;
 };
 
 export type BatchSource = {
@@ -34,10 +41,16 @@ export type BatchSource = {
   path: string;
   bytes: number;
   file: File;
+  width?: number;
+  height?: number;
+  error?: string;
 };
 
 // Nothing is resized in this pass, so the default suffix must not claim it was.
-export const defaultOutput: BatchOutput = { format: "png", quality: 90, suffix: "_converted", flatten: false };
+export const defaultOutput: BatchOutput = {
+  width: 1801, height: 2600, format: "png", quality: 92, suffix: "_resized", flatten: false,
+  dpi: 72, maxBytes: null, jpegBackground: "#ffffff",
+};
 
 const IMAGE_PATTERN = /\.(png|jpe?g|webp|avif|gif|bmp|tiff?)$/i;
 
@@ -57,6 +70,18 @@ export function toSources(files: File[], startId = 1): BatchSource[] {
         file,
       };
     });
+}
+
+/** Read oriented pixel dimensions once so preflight can plan memory accurately. */
+export async function inspectSources(sources: BatchSource[]): Promise<BatchSource[]> {
+  return Promise.all(sources.map(async (source) => {
+    try {
+      const bitmap = await createImageBitmap(source.file, { imageOrientation: "from-image" });
+      const measured = { ...source, width: bitmap.width, height: bitmap.height };
+      bitmap.close?.();
+      return measured;
+    } catch (error) { return { ...source, error: (error as Error).message || "could not decode image" }; }
+  }));
 }
 
 function normalisePath(path: string) {
@@ -115,6 +140,26 @@ export function estimateBytes(sources: BatchSource[], output: BatchOutput) {
     const ratio = output.format === "png" ? 1.15 : (0.12 + (output.quality / 100) * 0.5);
     return total + source.bytes * ratio;
   }, 0);
+}
+
+export function planConcurrency(sources: BatchSource[], output: BatchOutput, memoryBudget = 512 * 1024 * 1024, logical = 4) {
+  validateDimensions(output.width, output.height);
+  const largest = Math.max(1, ...sources.map((source) => estimatePeakBytes(
+    source.width ?? output.width, source.height ?? output.height, output.width, output.height)));
+  return Math.max(1, Math.min(4, Math.floor(logical / 2) || 1, Math.floor(memoryBudget / largest) || 1));
+}
+
+function renderInWorker(source: BatchSource, output: BatchOutput): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(new URL("./batch-worker.ts", import.meta.url), { type: "module" });
+    worker.onmessage = (event: MessageEvent<{ bytes?: ArrayBuffer; error?: string }>) => {
+      worker.terminate();
+      if (event.data.error) reject(new Error(event.data.error));
+      else resolve(new Uint8Array(event.data.bytes!));
+    };
+    worker.onerror = (event) => { worker.terminate(); reject(new Error(event.message || "worker failed")); };
+    worker.postMessage({ id: source.id, file: source.file, output });
+  });
 }
 
 export function formatBytes(bytes: number) {
@@ -219,27 +264,33 @@ export function makeZip(entries: ZipEntry[]): Uint8Array {
 
 /* ------------------------------------------------------------------ browser */
 
-/** Re-encode one source at its own size. Browser only. */
+/** Decode, EXIF-orient and resize one source with MINIMA's exact pixel core. */
 export async function renderOne(source: BatchSource, output: BatchOutput): Promise<Uint8Array> {
-  const bitmap = await createImageBitmap(source.file);
+  validateDimensions(output.width, output.height);
+  const bitmap = await createImageBitmap(source.file, { imageOrientation: "from-image" });
   try {
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = bitmap.width; sourceCanvas.height = bitmap.height;
+    const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
+    if (!sourceContext) throw new Error("2D canvas is unavailable");
+    sourceContext.drawImage(bitmap, 0, 0);
+    const sourcePixels = sourceContext.getImageData(0, 0, bitmap.width, bitmap.height);
+    const resized = resizeRgba({ width: bitmap.width, height: bitmap.height, data: sourcePixels.data }, output.width, output.height);
     const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    canvas.width = output.width; canvas.height = output.height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas is unavailable");
-
-    // JPG has no alpha channel, so transparency has to land on something.
+    const imageData = context.createImageData(output.width, output.height); imageData.data.set(resized.data);
     if (output.format === "jpg") {
-      context.fillStyle = "#FFFFFF";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    context.drawImage(bitmap, 0, 0);
-
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, mimeFor(output.format), output.format === "png" ? undefined : output.quality / 100));
-    if (!blob) throw new Error(`${output.format.toUpperCase()} encoding failed`);
-    return new Uint8Array(await blob.arrayBuffer());
+      const rgba = document.createElement("canvas"); rgba.width = output.width; rgba.height = output.height;
+      rgba.getContext("2d")!.putImageData(imageData, 0, 0);
+      context.fillStyle = output.jpegBackground; context.fillRect(0, 0, output.width, output.height);
+      context.drawImage(rgba, 0, 0);
+    } else context.putImageData(imageData, 0, 0);
+    return encodeOutput(canvas, {
+      format: output.format, quality: output.quality,
+      dpi: { x: output.dpi, y: output.dpi }, maxBytes: output.maxBytes ?? undefined,
+    });
   } finally {
     bitmap.close?.();
   }
@@ -253,8 +304,8 @@ export type BatchProgress = {
 };
 
 /**
- * Re-encode every source and return the zip. `onProgress` fires per file and
- * `shouldStop` is polled between files so Cancel takes effect promptly.
+ * Resize every source and return a deterministic zip. Parallelism follows the
+ * MINIMA memory estimate and is capped at four jobs.
  */
 export async function runBatch(
   sources: BatchSource[],
@@ -262,23 +313,32 @@ export async function runBatch(
   onProgress: (progress: BatchProgress) => void,
   shouldStop: () => boolean = () => false,
 ): Promise<{ zip: Uint8Array; progress: BatchProgress; stopped: boolean }> {
+  validateDimensions(output.width, output.height);
   const names = planNames(sources, output);
-  const entries: ZipEntry[] = [];
+  const completed = new Map<number, ZipEntry>();
   const progress: BatchProgress = { done: 0, total: sources.length, current: "", failed: [] };
-
-  for (const source of sources) {
-    if (shouldStop()) return { zip: makeZip(entries), progress, stopped: true };
-    progress.current = source.path;
-    onProgress({ ...progress, failed: [...progress.failed] });
-    try {
-      entries.push({ name: names.get(source.id)!, data: await renderOne(source, output) });
-    } catch (error) {
-      progress.failed.push({ name: source.path, reason: (error as Error).message || "could not be read" });
+  const perf = performance as Performance & { memory?: { jsHeapSizeLimit: number } };
+  const budget = Math.floor((perf.memory?.jsHeapSizeLimit ?? 1024 * 1024 * 1024) / 2);
+  const concurrency = planConcurrency(sources, output, budget, navigator.hardwareConcurrency || 4);
+  const renderer = typeof Worker !== "undefined" && typeof OffscreenCanvas !== "undefined" ? renderInWorker : renderOne;
+  let cursor = 0;
+  const execute = async () => {
+    while (!shouldStop()) {
+      const index = cursor++; if (index >= sources.length) return;
+      const source = sources[index]; progress.current = source.path;
+      onProgress({ ...progress, failed: [...progress.failed] });
+      try {
+        const peak = estimatePeakBytes(source.width ?? output.width, source.height ?? output.height, output.width, output.height);
+        if (peak > budget) throw new Error(`LOW_MEMORY_PATH_UNAVAILABLE: estimated peak ${formatBytes(peak)} exceeds browser budget ${formatBytes(budget)}`);
+        completed.set(index, { name: names.get(source.id)!, data: await renderer(source, output) });
+      }
+      catch (error) { progress.failed.push({ name: source.path, reason: (error as Error).message || "could not be read" }); }
+      progress.done += 1; onProgress({ ...progress, failed: [...progress.failed] });
     }
-    progress.done += 1;
-    onProgress({ ...progress, failed: [...progress.failed] });
-  }
-  return { zip: makeZip(entries), progress, stopped: false };
+  };
+  await Promise.all(Array.from({ length: concurrency }, execute));
+  const entries = [...completed.entries()].sort((a, b) => a[0] - b[0]).map((row) => row[1]);
+  return { zip: makeZip(entries), progress, stopped: shouldStop() && progress.done < progress.total };
 }
 
 /** Hand the finished zip to the browser's downloader. */
@@ -308,14 +368,15 @@ export function demo() {
     { ...file("b.jpg", "b.jpg"), id: 3 },
   ];
   const kept = planNames(sources, { ...defaultOutput, format: "webp" });
-  console.assert(kept.get(1) === "shoes/a_converted.webp", "the subfolder is preserved");
-  console.assert(kept.get(2) === "bags/a_converted.webp", "a same-named file in another folder keeps its own path");
-  console.assert(kept.get(3) === "b_converted.webp", "a root file stays at the root");
+  console.assert(kept.get(1) === "shoes/a_resized.webp", "the subfolder is preserved");
+  console.assert(kept.get(2) === "bags/a_resized.webp", "a same-named file in another folder keeps its own path");
+  console.assert(kept.get(3) === "b_resized.webp", "a root file stays at the root");
   const flat = planNames(sources, { ...defaultOutput, flatten: true });
-  console.assert(flat.get(1) === "a_converted.png", "flattening drops the folder");
-  console.assert(flat.get(2) === "a_converted (2).png", "and resolves the collision it creates");
-  console.assert(planNames(sources, { ...defaultOutput, suffix: "" }).get(3) === "b_converted.png".replace("_converted", ""), "an empty suffix is allowed");
-  console.assert(planNames(sources, { ...defaultOutput, format: "jpg" }).get(3) === "b_converted.jpg", "jpg maps to a .jpg extension");
+  console.assert(flat.get(1) === "a_resized.png", "flattening drops the folder");
+  console.assert(flat.get(2) === "a_resized (2).png", "and resolves the collision it creates");
+  console.assert(planNames(sources, { ...defaultOutput, suffix: "" }).get(3) === "b.png", "an empty suffix is allowed");
+  console.assert(planNames(sources, { ...defaultOutput, format: "jpg" }).get(3) === "b_resized.jpg", "jpg maps to a .jpg extension");
+  console.assert(planConcurrency([{ ...file("a.png"), width: 100, height: 100 }], { ...defaultOutput, width: 50, height: 50 }, 1e9, 8) === 4, "pool caps at four");
 
   // Summary: folder count and nesting, for the fork dialog.
   const summary = summarise([
