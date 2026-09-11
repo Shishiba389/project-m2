@@ -829,3 +829,20 @@ body { background: var(--app); display: grid; place-items: center; }
   width: 100%; padding: 6px 7px; font-size: 12px; font-variant-numeric: tabular-nums;
   border: 1px solid var(--line-6); border-radius: 6px; background: var(--control-2); color: var(--ink);
 }
+
+/* The batch source strip: identifies the drop without implying a geometry
+   preview, now that target framing has moved to its own engine. */
+.source-strip { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start }
+.source-strip figure { margin: 0; display: grid; gap: 4px; width: 84px }
+.source-strip img {
+  width: 84px; height: 84px; object-fit: cover; display: block;
+  border: 1px solid var(--line-4); border-radius: 8px; background: var(--tile-5);
+}
+.source-strip figcaption {
+  font-size: 9px; color: var(--ink-11);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.source-more {
+  height: 84px; min-width: 44px; padding: 0 10px; display: grid; place-items: center;
+  border: 1px dashed var(--line-6); border-radius: 8px; color: var(--ink-10); font-size: 12px;
+}

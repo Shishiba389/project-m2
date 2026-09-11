@@ -12,7 +12,7 @@ import {
   CloudDialog, defaultExportOptions, ExportDialog, ExportProgress, PresetDialog, RemoveDialog,
   ShortcutsDialog,
 } from "@/src/dialogs";
-import { defaultTarget, makeZip } from "@/src/batch";
+import { makeZip } from "@/src/batch";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import {
@@ -144,6 +144,6 @@ console.assert(makeZip([]).byteLength === 22, "the batch zip writer is reachable
     onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />);
   console.assert(bare.includes("product-placeholder"), "an asset with no file still renders the stand-in");
 }
-console.assert(defaultTarget.width > 0 && defaultTarget.height > 0, "batch ships a usable default target");
+console.assert(!("drawRect" in ({} as Record<string, unknown>)), "batch no longer owns target geometry");
 
 if (!process.exitCode) console.log("\nsmoke: every screen and overlay rendered");

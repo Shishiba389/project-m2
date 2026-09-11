@@ -296,7 +296,7 @@ export function MinimaWorkspace() {
     : screen === "settings" ? "Settings"
     : screen === "presets" ? "Presets Manager"
     : screen === "review" ? "Error Diagnostics"
-    : screen === "batch" ? "Batch resize"
+    : screen === "batch" ? "Batch convert"
     : screen === "import" ? "Drag & Drop"
     : "MINIMA Resize";
 

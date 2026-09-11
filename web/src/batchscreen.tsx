@@ -6,20 +6,10 @@ import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
-  defaultOutput, defaultTarget, downloadZip, estimateBytes, formatBytes, makeZip, planNames,
-  runBatch, summarise,
-  type BatchOutput, type BatchProgress, type BatchSource, type BatchTarget, type Fit, type OutFormat,
+  defaultOutput, downloadZip, estimateBytes, formatBytes, makeZip, planNames, runBatch, summarise,
+  type BatchOutput, type BatchProgress, type BatchSource, type OutFormat,
 } from "@/src/batch";
 
-/** Ratio chips, kept separate from the editor's marketplace preset table. */
-const RATIOS: [string, number, number][] = [
-  ["1:1", 1, 1], ["4:5", 4, 5], ["3:4", 3, 4], ["9:16", 9, 16], ["16:9", 16, 9], ["9:13", 9, 13],
-];
-const FITS: [Fit, string, string][] = [
-  ["fit", "Fit", "Whole image inside, margins filled"],
-  ["fill", "Fill", "Covers the frame, edges cropped"],
-  ["stretch", "Stretch", "Distorts to the exact frame"],
-];
 const FORMATS: OutFormat[] = ["png", "jpg", "webp"];
 
 /**
@@ -48,8 +38,8 @@ export function ImportForkDialog({ summary, onBatch, onEditor }: {
       <div className="fork-options">
         <button className={`fork-option ${many ? "recommended" : ""}`} onClick={onBatch}>
           <Layers aria-hidden="true" />
-          <strong>Batch resize</strong>
-          <span>One target for every image, resized here in the browser and downloaded as a zip. Subfolders are preserved.</span>
+          <strong>Batch convert</strong>
+          <span>Re-encode every image at its own size and download them as a zip. Format, naming and subfolders in one pass.</span>
           {many && <em>Suggested for {summary.images}</em>}
         </button>
         <button className={`fork-option ${many ? "" : "recommended"}`} onClick={onEditor}>
@@ -66,7 +56,6 @@ export function ImportForkDialog({ summary, onBatch, onEditor }: {
 type Phase = { kind: "setup" } | { kind: "running"; progress: BatchProgress } | { kind: "done"; progress: BatchProgress; bytes: number; stopped: boolean };
 
 export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLeave: () => void }) {
-  const [target, setTarget] = useState<BatchTarget>(defaultTarget);
   const [output, setOutput] = useState<BatchOutput>(defaultOutput);
   const [phase, setPhase] = useState<Phase>({ kind: "setup" });
   const stop = useRef(false);
@@ -74,34 +63,31 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
 
   const summary = useMemo(() => summarise(sources), [sources]);
   const names = useMemo(() => planNames(sources, output), [sources, output]);
-  const estimate = estimateBytes(sources, target, output);
+  const estimate = estimateBytes(sources, output);
 
   // Previews are object URLs, so they have to be released when the set changes.
-  const previews = useMemo(() => sources.slice(0, 3).map((source) => ({
+  const previews = useMemo(() => sources.slice(0, 6).map((source) => ({
     id: source.id, name: source.name, url: URL.createObjectURL(source.file),
   })), [sources]);
   useEffect(() => () => previews.forEach((preview) => URL.revokeObjectURL(preview.url)), [previews]);
-
-  const setSize = (patch: Partial<BatchTarget>) => setTarget((current) => ({ ...current, ...patch }));
 
   const start = async () => {
     if (!sources.length) return;
     stop.current = false;
     setPhase({ kind: "running", progress: { done: 0, total: sources.length, current: "", failed: [] } });
-    const result = await runBatch(sources, target, output,
+    const result = await runBatch(sources, output,
       (progress) => setPhase({ kind: "running", progress }),
       () => stop.current);
     lastZip.current = result.zip;
     setPhase({ kind: "done", progress: result.progress, bytes: result.zip.byteLength, stopped: result.stopped });
-    if (result.progress.done > result.progress.failed.length) downloadZip(result.zip, zipName(target));
+    if (result.progress.done > result.progress.failed.length) downloadZip(result.zip, ZIP_NAME);
   };
 
   if (!sources.length) return <div className="batch-pane">
     <div className="batch-empty">
       <FolderTree aria-hidden="true" />
       <h1>No source files</h1>
-      <p>Batch resize works on the files you drop in. The sample images in the
-        Gallery have no file behind them, so there is nothing to re-encode.</p>
+      <p>Batch works on the files you drop in, so there is nothing to re-encode yet.</p>
       <Button onClick={onLeave}>Import images</Button>
     </div>
   </div>;
@@ -110,8 +96,9 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
     <div className="batch-sheet">
       <header className="batch-head">
         <div>
-          <h1>Batch resize</h1>
-          <p>One target applied to every file, resized in this browser. Nothing is uploaded.</p>
+          <h1>Batch convert</h1>
+          <p>Every file re-encoded in this browser at its own size, then downloaded
+            as a zip. Nothing is uploaded.</p>
         </div>
         <dl className="batch-source">
           <div><dt>Images</dt><dd>{summary.images}</dd></div>
@@ -122,67 +109,21 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
 
       {phase.kind === "setup" && <>
         <section className="batch-step">
-          <h2><span>01</span> Target frame</h2>
-          <div className="batch-size">
-            <label><span className="field-label">Width</span>
-              <input type="number" min={1} max={12000} value={target.width}
-                onChange={(event) => setSize({ width: clamp(Number(event.target.value)) })} />
-            </label>
-            <span className="batch-times" aria-hidden="true">×</span>
-            <label><span className="field-label">Height</span>
-              <input type="number" min={1} max={12000} value={target.height}
-                onChange={(event) => setSize({ height: clamp(Number(event.target.value)) })} />
-            </label>
-            <span className="batch-unit">px</span>
-          </div>
-          <div className="ratio-chips" role="group" aria-label="Aspect ratio">
-            {RATIOS.map(([label, w, h]) => {
-              const active = Math.abs(target.width / target.height - w / h) < 0.005;
-              const long = Math.max(target.width, target.height);
-              return <button key={label} className={active ? "active" : ""}
-                onClick={() => setSize(w >= h
-                  ? { width: long, height: Math.round((long * h) / w) }
-                  : { width: Math.round((long * w) / h), height: long })}>{label}</button>;
-            })}
-          </div>
-
-          <span className="field-label">How each image meets the frame</span>
-          <div className="fit-cards" role="radiogroup" aria-label="Fit mode">
-            {FITS.map(([value, label, hint]) => <button key={value} role="radio" aria-checked={target.fit === value}
-              className={target.fit === value ? "active" : ""} onClick={() => setSize({ fit: value })}>
-              <strong>{label}</strong><span>{hint}</span>
-            </button>)}
-          </div>
-
-          <label className="batch-bg">
-            <span className="field-label">Frame background</span>
-            <span className="color-row">
-              <input type="color" value={target.background} aria-label="Frame background"
-                onChange={(event) => setSize({ background: event.target.value })} />
-              <input className="export-input" value={target.background}
-                onChange={(event) => setSize({ background: event.target.value })} aria-label="Frame background hex" />
-            </span>
-          </label>
-        </section>
-
-        <section className="batch-step">
-          <h2><span>02</span> Preview</h2>
-          <p className="batch-hint">Exactly how the first files will be framed. Fit, Fill and Stretch
-            map to the same contain, cover and fill behaviour the resize uses.</p>
-          <div className="batch-previews">
+          <h2><span>01</span> Source</h2>
+          <div className="source-strip">
             {previews.map((preview) => <figure key={preview.id}>
-              <div className="preview-frame"
-                style={{ aspectRatio: `${target.width} / ${target.height}`, background: target.background }}>
-                <img src={preview.url} alt=""
-                  style={{ objectFit: target.fit === "fit" ? "contain" : target.fit === "fill" ? "cover" : "fill" }} />
-              </div>
+              <img src={preview.url} alt="" />
               <figcaption>{preview.name}</figcaption>
             </figure>)}
+            {sources.length > previews.length && <span className="source-more">+{sources.length - previews.length}</span>}
           </div>
+          <p className="batch-hint">Resize geometry is not set here. Target framing is
+            being built as its own engine; this pass handles format, naming and
+            folder structure, and each image keeps its own pixel size.</p>
         </section>
 
         <section className="batch-step">
-          <h2><span>03</span> Output</h2>
+          <h2><span>02</span> Output</h2>
           <div className="format-chips" role="group" aria-label="Output format">
             {FORMATS.map((format) => <button key={format} className={output.format === format ? "active" : ""}
               onClick={() => setOutput((current) => ({ ...current, format }))}>{format.toUpperCase()}</button>)}
@@ -210,12 +151,12 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
             <strong>{sources.length} file{sources.length === 1 ? "" : "s"}</strong>
             <span>≈ {formatBytes(estimate)} as {output.format.toUpperCase()}</span>
           </div>
-          <Button onClick={start}><Download /> Resize and download</Button>
+          <Button onClick={start}><Download /> Convert and download</Button>
         </footer>
       </>}
 
       {phase.kind === "running" && <section className="batch-progress">
-        <h2>Resizing</h2>
+        <h2>Converting</h2>
         <Progress value={Math.round((phase.progress.done / phase.progress.total) * 100)} />
         <p className="batch-count">{phase.progress.done} of {phase.progress.total}</p>
         <p className="batch-current">{phase.progress.current}</p>
@@ -228,15 +169,15 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
       {phase.kind === "done" && <section className="batch-done">
         <CircleCheck aria-hidden="true" />
         <h2>{phase.stopped ? "Cancelled" : "Downloaded"}</h2>
-        <p>{phase.progress.done - phase.progress.failed.length} of {phase.progress.total} resized
+        <p>{phase.progress.done - phase.progress.failed.length} of {phase.progress.total} converted
           {" · "}{formatBytes(phase.bytes)} zip</p>
         {phase.progress.failed.length > 0 && <div className="error-log">
           {phase.progress.failed.map((failure) => <span key={failure.name}>{failure.name}: {failure.reason}</span>)}
         </div>}
         <div className="batch-done-actions">
-          <Button variant="outline" onClick={() => setPhase({ kind: "setup" })}>Change the target</Button>
+          <Button variant="outline" onClick={() => setPhase({ kind: "setup" })}>Change the output</Button>
           <Button variant="outline"
-            onClick={() => lastZip.current && downloadZip(lastZip.current, zipName(target))}>Download again</Button>
+            onClick={() => lastZip.current && downloadZip(lastZip.current, ZIP_NAME)}>Download again</Button>
           <Button onClick={onLeave}>Back to the gallery</Button>
         </div>
       </section>}
@@ -244,8 +185,7 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
   </div>;
 }
 
-const clamp = (value: number) => (Number.isFinite(value) && value > 0 ? Math.min(12000, Math.round(value)) : 1);
-const zipName = (target: BatchTarget) => `minima-${target.width}x${target.height}.zip`;
+const ZIP_NAME = "minima-batch.zip";
 
 /** Re-exported so the smoke check can build a zip without importing batch.ts too. */
 export { makeZip };

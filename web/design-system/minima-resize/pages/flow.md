@@ -23,7 +23,7 @@ There is exactly **one** navigation state, `screen`. The old dual
 | `screen` | Step served | Entry | Exit |
 |---|---|---|---|
 | `import` | Import | rail **Import**; automatic when `assets.length === 0`, which is every first run | an import opens the lane fork |
-| `batch` | Resize a whole drop at once | the fork's **Batch resize**; rail **Batch** | Back → `gallery` |
+| `batch` | Convert a whole drop at once | the fork's **Batch convert**; rail **Batch** | Back → `gallery` |
 | `gallery` | Select, batch manage | rail **Images**; Back from editor/review; view switch **Gallery** | — (the hub) |
 | `editor` | Resize / Position | double-click a card; **Enter**; view switch **Editor** | Back → `gallery` |
 | `review` | Review | **Review n** in the gallery toolbar; needs-attention count in the status bar | Back → `gallery` |
@@ -191,29 +191,32 @@ image count, folder count, whether there are subfolders, total size — and asks
 
 | Choice | Goes to | What it is for |
 |---|---|---|
-| **Batch resize** | `screen = batch` | one target for every file, resized in the browser and downloaded as a zip. Suggested when more than one image arrived |
+| **Batch convert** | `screen = batch` | every file re-encoded at its own size in the browser and downloaded as a zip: format, naming and folder structure in one pass. Suggested when more than one image arrived |
 | **Open the editor** | `screen = editor`, first file active | per-image placement, safe area, review, export. Suggested for a single image |
 
 Dismissing the dialog is the same as choosing the editor. The two lanes are
 different jobs, and guessing wrong costs the most on the largest drops, so the
 choice is explicit rather than a default plus an undo.
 
-## 3b. Batch resize — a separate pipeline
+## 3b. Batch convert — a separate pipeline
 
 `src/batch.ts` shares nothing with the editor: not `Doc`, not the preset table,
 not the selection. It works on `BatchSource` records that keep the real `File`,
 because it re-encodes pixels rather than describing a layout.
 
+**There is deliberately no target geometry here.** Resize framing is being built
+as its own engine, so this pass does the part that needs no geometry and each
+image keeps its own pixel size.
+
 | Step | Control | Wiring |
 |---|---|---|
-| 01 Target frame | width × height, ratio chips, Fit/Fill/Stretch cards, frame background | `drawRect()` decides where each source lands: Fit contains, Fill covers, Stretch distorts |
-| 02 Preview | the first three files in the chosen frame | CSS `object-fit: contain / cover / fill`, which is the same contain/cover/fill the canvas draw uses, so the preview cannot drift from the result |
-| 03 Output | PNG/JPG/WEBP, quality (hidden for PNG), suffix, keep-subfolders | `planNames()` produces the path inside the zip and resolves the collisions flattening creates |
-| Run | **Resize and download** | `runBatch()` draws each source into a canvas at the target size, encodes it, and collects entries; Cancel is polled between files |
-| Download | automatic | `makeZip()` writes a store-only zip — PNG/JPG/WEBP are already compressed, so deflating again would only add a dependency — and the browser downloads `minima-<w>x<h>.zip` |
+| 01 Source | thumbnails of the drop, counts, total size | `summarise()`; the strip identifies the files without implying a geometry preview |
+| 02 Output | PNG/JPG/WEBP, quality (hidden for PNG), suffix, keep-subfolders | `planNames()` produces the path inside the zip and resolves the collisions flattening creates |
+| Run | **Convert and download** | `runBatch()` decodes each source, redraws it at its own size, encodes it in the chosen format, and collects entries; Cancel is polled between files. JPG has no alpha, so transparency lands on white |
+| Download | automatic | `makeZip()` writes a store-only zip — PNG/JPG/WEBP are already compressed, so deflating again would only add a dependency — and the browser downloads `minima-batch.zip` |
 
 There is no destination folder: the browser downloads the zip. Nothing is
-uploaded; every resize happens on the user's machine.
+uploaded; every conversion happens on the user's machine.
 
 Failures are per file and never abort the run: unreadable sources are listed on
 the done panel and the rest still download.
@@ -236,7 +239,7 @@ Computed so two surfaces cannot disagree:
   zoom never changes the result.
 - **Output filenames** — `outputName()` for export, `planNames()` for batch.
 - **Back target** — `backTarget()`.
-- **Batch draw rect** — `drawRect()`, shared by the preview and the canvas draw.
+- **Batch output paths** — `planNames()`.
 
 `npm run check` runs all of it: `tsc`, the `demo()` assertions in `flow.ts` and
 `batch.ts` — including CRC32 against known values and the zip's own structure —
