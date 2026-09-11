@@ -1,0 +1,13 @@
+# Line endings are load-bearing: CI asserts that a rebuild leaves docs/
+# unchanged, and that comparison fails if a checkout and the build disagree.
+# Normalise to LF in the repository regardless of who commits.
+* text=auto eol=lf
+
+# Binary assets must never be touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.svg text eol=lf
+*.zip binary
+*.bundle binary

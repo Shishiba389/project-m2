@@ -1,0 +1,120 @@
+name: Verify and publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Two pushes in quick succession should not race each other to the mirror.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      - name: Type-check, assert flow logic, render every screen
+        working-directory: web
+        run: npm run check
+
+      # GitHub Pages serves a project site from /<repo>/. Building with the
+      # mirror's base leaves this site blank -- index.html asks for
+      # /minima-resize/assets/... and Pages answers 404 -- and the build itself
+      # succeeds, so nothing else catches it.
+      - name: Assert docs/ was built for this repo's base path
+        run: |
+          if ! grep -q 'src="/project-m2/assets/' docs/index.html; then
+            echo "::error file=docs/index.html::docs/ was not built for /project-m2/."
+            echo "Run 'npm run build' in web/ (no BASE_PATH) and commit docs/."
+            grep -oE '(src|href)="[^"]*"' docs/index.html
+            exit 1
+          fi
+
+      # Vite's hashed filenames are deterministic for identical input, so a
+      # rebuild that changes docs/ means the committed build is behind src/.
+      - name: Assert docs/ is current
+        working-directory: web
+        run: npm run build
+
+      - name: Report a stale build
+        run: |
+          if ! git diff --quiet -- docs; then
+            echo "::error::docs/ is out of date with web/src. Run 'npm run build' in web/ and commit docs/."
+            git --no-pager diff --stat -- docs
+            exit 1
+          fi
+
+  mirror:
+    name: Publish mirror
+    needs: verify
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        working-directory: web
+        run: npm ci
+
+      # The mirror repo holds build output at its root and is served from
+      # /minima-resize/, so it needs its own base path. This runner is
+      # throwaway, so writing over docs/ here costs nothing.
+      - name: Build for the mirror
+        working-directory: web
+        run: BASE_PATH=minima-resize npm run build
+
+      - name: Push to Shishiba389/minima-resize
+        env:
+          MIRROR_TOKEN: ${{ secrets.MIRROR_TOKEN }}
+        run: |
+          if [ -z "$MIRROR_TOKEN" ]; then
+            echo "::notice::MIRROR_TOKEN is not set, so the mirror was not updated."
+            echo "Add a fine-grained PAT with Contents: read and write on"
+            echo "Shishiba389/minima-resize as the repository secret MIRROR_TOKEN."
+            exit 0
+          fi
+
+          git clone --depth 1 \
+            "https://x-access-token:${MIRROR_TOKEN}@github.com/Shishiba389/minima-resize.git" mirror
+
+          # Replace the published files wholesale so a renamed asset hash never
+          # leaves the previous bundle behind.
+          find mirror -mindepth 1 -maxdepth 1 -not -name .git -exec rm -rf {} +
+          cp -r docs/. mirror/
+
+          cd mirror
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "Mirror already matches this build."
+            exit 0
+          fi
+
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              add -A
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Sync with project-m2@${GITHUB_SHA::7}"
+          git push origin HEAD:main
+          echo "::notice::Mirror updated from project-m2@${GITHUB_SHA::7}."
