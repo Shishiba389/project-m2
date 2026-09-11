@@ -60,9 +60,26 @@ export function customPreset(label: string, from: Preset, list: Preset[]): Prese
   return { ...from, id, label, category: "Custom" };
 }
 
+/**
+ * Marketplace canvases are rarely exact ratios: 1801x2600 reduces to itself,
+ * and "1801 : 2600" is not a ratio anyone reads. Approximate to the nearest
+ * ratio with a small denominator, and say so when it is not exact.
+ */
 export function ratioLabel(width: number, height: number) {
   const divisor = gcd(width, height);
-  return `${width / divisor} : ${height / divisor}`;
+  const w = width / divisor;
+  const h = height / divisor;
+  if (w <= 40 && h <= 40) return `${w} : ${h}`;
+
+  const exact = width / height;
+  let best = { w: 1, h: 1, error: Infinity };
+  for (let d = 1; d <= 32; d += 1) {
+    const n = Math.round(exact * d);
+    if (n < 1) continue;
+    const error = Math.abs(n / d - exact);
+    if (error < best.error - 1e-12) best = { w: n, h: d, error };
+  }
+  return `${best.error / exact < 0.001 ? "" : "≈ "}${best.w} : ${best.h}`;
 }
 function gcd(a: number, b: number): number {
   return b ? gcd(b, a % b) : a;
@@ -364,13 +381,16 @@ export function scopeAssets(scope: Scope, assets: Asset[], selected: number[], a
 
 /* ---------------------------------------------------------------- back rule */
 
-/** One rule for the top-bar Back button: every screen goes up one level. */
+/**
+ * One rule for the top-bar Back button: go up one level, and show nothing when
+ * there is no level above. Import and Gallery are both top-level destinations
+ * reached from the rail, so Back is hidden on them — pointing Gallery's Back at
+ * Gallery is what made the button look broken.
+ */
 export function backTarget(screen: Screen, hasAssets: boolean): Screen | null {
-  if (screen === "gallery" || screen === "presets" || screen === "settings") {
-    return hasAssets ? "gallery" : "import";
-  }
   if (screen === "editor" || screen === "review") return "gallery";
-  return null; // import is the root
+  if (screen === "presets" || screen === "settings") return hasAssets ? "gallery" : "import";
+  return null; // import and gallery are the roots
 }
 
 /* --------------------------------------------------------------------- demo */
@@ -438,6 +458,15 @@ export function demo() {
   console.assert(made.id !== "my-brand", "a clashing slug is suffixed");
   console.assert(customPreset("Fresh One", zalando, PRESETS).id === "fresh-one", "a free slug is used as-is");
 
+  // Ratios have to read as ratios, not as the pixel pair again.
+  console.assert(ratioLabel(2000, 2000) === "1 : 1", "a square reduces exactly");
+  console.assert(ratioLabel(1080, 1350) === "4 : 5", "instagram portrait reduces exactly");
+  console.assert(ratioLabel(1080, 1920) === "9 : 16", "story reduces exactly");
+  console.assert(ratioLabel(1801, 2600) === "9 : 13", "Zalando's unreducible pair reads as 9:13");
+  console.assert(!ratioLabel(1801, 2600).includes("1801"), "and never echoes the pixel count");
+  console.assert(ratioLabel(1000, 1731) === "≈ 15 : 26", "a pair that does not land close is marked approximate");
+  console.assert(ratioLabel(1200, 1600) === "3 : 4", "a reducible pair stays exact");
+
   // Fit sizing stays inside the safe rect; Fill covers it.
   const canvasRatio = zalando.width / zalando.height;
   const wide = fitBox("Fit", 2, canvasRatio, zalando.safeX, zalando.safeY);
@@ -470,8 +499,11 @@ export function demo() {
   console.assert(scopeAssets("selected", many, [2, 3], 1).length === 2, "selected scope follows the selection");
   console.assert(scopeAssets("all", many, [2, 3], 1).length === 3, "all scope is the whole batch");
   console.assert(backTarget("editor", true) === "gallery", "editor backs out to gallery");
+  console.assert(backTarget("review", true) === "gallery", "review backs out to gallery");
+  console.assert(backTarget("settings", true) === "gallery", "settings backs out to the work");
   console.assert(backTarget("settings", false) === "import", "settings backs out to import with no assets");
-  console.assert(backTarget("import", true) === null, "import is the root");
+  console.assert(backTarget("import", true) === null, "import is a root");
+  console.assert(backTarget("gallery", true) === null, "gallery is a root, so Back is hidden rather than a no-op");
 
   console.log("flow.ts: all checks passed");
 }
