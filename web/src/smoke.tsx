@@ -14,7 +14,7 @@ import {
 } from "@/src/dialogs";
 import { Inspector } from "@/src/inspector";
 import {
-  defaultGuides, defaultSettings, Editor, Gallery, ImportScreen, PresetManager, Review, SettingsScreen,
+  defaultGuides, Editor, Gallery, ImportScreen, PresetManager, Review, SettingsScreen,
 } from "@/src/screens";
 import {
   countByStatus, docFromPreset, docTarget, emptyFilter, outputName, presetById, PRESETS,
@@ -62,7 +62,8 @@ check("workspace shell", <MinimaWorkspace />,
   "MINIMA Resize", "Resize Inspector", "Apply to", "need attention", "All changes saved");
 
 check("import screen", <ImportScreen policy="skip" onPolicy={noop} onFiles={noop} onFolders={noop} onCloud={noop} onDrop={noop} />,
-  "Drop images here", "Add files", "Add folders", "Import from cloud", "Handling existing files");
+  "Start a resize batch", "Drop images here", "Add files", "Add folders", "Import from cloud",
+  "If a filename already exists", "Export");
 
 check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} counts={counts} filter={emptyFilter}
   zoom={100} needsAttention={2} target={target} onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />,
@@ -85,8 +86,8 @@ check("presets", <PresetManager presets={PRESETS} activeId="zalando" onApply={no
   onEdit={noop} onDuplicate={noop} onDelete={noop} onShare={noop} />,
   "Presets Manager", "Preset Details", "Add new custom preset", "Marketplace");
 
-check("settings", <SettingsScreen presets={PRESETS} settings={defaultSettings} onSettings={noop} />,
-  "App Settings", "Settings Details", "Default preset", "App theme", "Hardware acceleration");
+check("settings", <SettingsScreen theme="dark" onTheme={noop} />,
+  "Settings", "Appearance", "Light", "Dark", "System");
 
 check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} presets={PRESETS} guides={defaultGuides}
   scope="selected" scopeCount={3} selectedCount={3} totalCount={4} compare overlay={100} processing={false} progress={0}
