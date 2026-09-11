@@ -12,6 +12,8 @@ import {
   CloudDialog, defaultExportOptions, ExportDialog, ExportProgress, PresetDialog, RemoveDialog,
   ShortcutsDialog,
 } from "@/src/dialogs";
+import { defaultTarget, makeZip } from "@/src/batch";
+import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import {
   defaultGuides, Editor, Gallery, ImportScreen, PresetManager, Review, SettingsScreen,
@@ -71,12 +73,12 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
 
 check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
-  onBox={noop} onSplit={noop} onChoose={noop} onToggleGrid={noop} />,
+  onBox={noop} onSplit={noop} onChoose={noop} onToggleGrid={noop} onStep={noop} />,
   "editable-object", "filmstrip", "canvas-grid");
 
 check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
-  onBox={noop} onSplit={noop} onChoose={noop} onToggleGrid={noop} />,
+  onBox={noop} onSplit={noop} onChoose={noop} onToggleGrid={noop} onStep={noop} />,
   "Original", "Resized preview", "split-handle");
 
 check("review", <Review assets={assets.slice(2)} target={target} onOpen={noop} onFix={noop} onFixAll={noop} onRetry={noop} />,
@@ -109,9 +111,20 @@ check("preset editor", <PresetDialog draft={{ preset: presetById("my-brand"), mo
 
 check("cloud import", <CloudDialog open onOpenChange={noop} onImport={noop} />);
 
+// Batch is a separate pipeline, so it gets its own landmarks. With no sources
+// it must say so rather than offering a run button that cannot do anything.
+check("batch, no sources", <BatchScreen sources={[]} onLeave={noop} />,
+  "No source files", "Import images");
+
+// The fork dialog is a Radix dialog, so only its mount is provable here.
+check("import fork", <ImportForkDialog summary={{ images: 12, folders: 3, nested: true, bytes: 4096 }}
+  onBatch={noop} onEditor={noop} />);
+
 // Overlay bodies live behind a portal, so the strings they show are asserted
 // against the pure helpers that produce them instead.
 console.assert(outputName(assets[0], "jpg", "_resized", true) === "a_resized.jpg", "the export dialog previews real filenames");
 console.assert(assets.filter((asset) => asset.corrupt).length === 1, "the export dialog has a failure to warn about");
+console.assert(makeZip([]).byteLength === 22, "the batch zip writer is reachable from the app bundle");
+console.assert(defaultTarget.width > 0 && defaultTarget.height > 0, "batch ships a usable default target");
 
 if (!process.exitCode) console.log("\nsmoke: every screen and overlay rendered");

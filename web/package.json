@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && tsx src/flow.ts && tsx src/smoke.tsx"
+    "check": "tsc --noEmit && tsx src/flow.ts && tsx src/batch.ts && tsx src/smoke.tsx"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

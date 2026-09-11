@@ -22,7 +22,8 @@ There is exactly **one** navigation state, `screen`. The old dual
 
 | `screen` | Step served | Entry | Exit |
 |---|---|---|---|
-| `import` | Import | rail **Import**; automatic when `assets.length === 0` | any import adds assets → `gallery` |
+| `import` | Import | rail **Import**; automatic when `assets.length === 0` | an import opens the lane fork |
+| `batch` | Resize a whole drop at once | the fork's **Batch resize**; rail **Batch** | Back → `gallery` |
 | `gallery` | Select, batch manage | rail **Images**; Back from editor/review; view switch **Gallery** | — (the hub) |
 | `editor` | Resize / Position | double-click a card; **Enter**; view switch **Editor** | Back → `gallery` |
 | `review` | Review | **Review n** in the gallery toolbar; needs-attention count in the status bar | Back → `gallery` |
@@ -55,6 +56,7 @@ first, so a modifier is never active on a screen that cannot show it.
 |---|---|---|
 | Import | `screen = import` | never |
 | Images | `screen = lastImageScreen` (`gallery` or `editor`) | no assets |
+| Batch | `screen = batch` | nothing imported this session (no `File` handles) |
 | Presets | `screen = presets` | never |
 | Export | opens the export overlay, screen unchanged | nothing processed yet |
 | Settings | `screen = settings` | never |
@@ -150,6 +152,43 @@ and Dark actually re-skin the app. The detail pane renders the selected
 section — GPU acceleration (hardware switch, GPU priority, thread count, RAM
 allocation), keyboard shortcuts, or default export paths.
 
+## 3a. The lane fork
+
+An import does not pick a lane. `ImportForkDialog` reports what arrived —
+image count, folder count, whether there are subfolders, total size — and asks:
+
+| Choice | Goes to | What it is for |
+|---|---|---|
+| **Batch resize** | `screen = batch` | one target for every file, resized in the browser and downloaded as a zip. Suggested when more than one image arrived |
+| **Open the editor** | `screen = gallery` | per-image placement, safe area, review, export. Suggested for a single image |
+
+Dismissing the dialog is the same as choosing the editor. The two lanes are
+different jobs, and guessing wrong costs the most on the largest drops, so the
+choice is explicit rather than a default plus an undo.
+
+## 3b. Batch resize — a separate pipeline
+
+`src/batch.ts` shares nothing with the editor: not `Doc`, not the preset table,
+not the selection. It works on `BatchSource` records that keep the real `File`,
+because it re-encodes pixels rather than describing a layout.
+
+| Step | Control | Wiring |
+|---|---|---|
+| 01 Target frame | width × height, ratio chips, Fit/Fill/Stretch cards, frame background | `drawRect()` decides where each source lands: Fit contains, Fill covers, Stretch distorts |
+| 02 Preview | the first three files in the chosen frame | CSS `object-fit: contain / cover / fill`, which is the same contain/cover/fill the canvas draw uses, so the preview cannot drift from the result |
+| 03 Output | PNG/JPG/WEBP, quality (hidden for PNG), suffix, keep-subfolders | `planNames()` produces the path inside the zip and resolves the collisions flattening creates |
+| Run | **Resize and download** | `runBatch()` draws each source into a canvas at the target size, encodes it, and collects entries; Cancel is polled between files |
+| Download | automatic | `makeZip()` writes a store-only zip — PNG/JPG/WEBP are already compressed, so deflating again would only add a dependency — and the browser downloads `minima-<w>x<h>.zip` |
+
+There is no destination folder: the browser downloads the zip. Nothing is
+uploaded; every resize happens on the user's machine.
+
+Failures are per file and never abort the run: unreadable sources are listed on
+the done panel and the rest still download.
+
+The batch screen hides the inspector and the editor's status-bar actions,
+because a second set of Apply/Export controls would contradict its own.
+
 ## 4. Derived, never stored
 
 Computed so two surfaces cannot disagree:
@@ -162,6 +201,10 @@ Computed so two surfaces cannot disagree:
 - **Apply / Export scope** — `scopeAssets()`.
 - **Object box** — `fitBox()` / `anchor()` / `snapBox()`, in percent of the
   canvas so zoom never changes the result.
-- **Output filenames** — `outputName()`. **Back target** — `backTarget()`.
+- **Output filenames** — `outputName()` for export, `planNames()` for batch.
+- **Back target** — `backTarget()`.
+- **Batch draw rect** — `drawRect()`, shared by the preview and the canvas draw.
 
-Checks live in `demo()` at the bottom of `flow.ts`: `npx tsx src/flow.ts`.
+`npm run check` runs all of it: `tsc`, the `demo()` assertions in `flow.ts` and
+`batch.ts` — including CRC32 against known values and the zip's own structure —
+then server-renders every screen and overlay.
