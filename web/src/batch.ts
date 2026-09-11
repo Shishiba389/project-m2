@@ -1,24 +1,19 @@
 /**
- * Batch resize — its own pipeline, independent of the editor.
+ * Batch convert — its own pipeline, independent of the editor.
  *
  * The editor positions one image at a time on a canvas and keeps the result in
- * app state. Batch takes the files the user dropped, resizes every one against
- * a single target, and hands back a zip the browser downloads. Nothing here
- * touches the editor's Doc, preset list or selection.
+ * app state. Batch takes the files the user dropped, re-encodes every one, and
+ * hands back a zip the browser downloads. Nothing here touches the editor's
+ * Doc, preset list or selection.
+ *
+ * There is deliberately no target geometry: the resize rules are being built
+ * as their own engine, so batch does the part that needs no geometry —
+ * format, naming, folder structure — and each image keeps its own pixel size.
  *
  * Everything above `renderOne` is pure and checked by `demo()`.
  */
 
-export type Fit = "fit" | "fill" | "stretch";
 export type OutFormat = "png" | "jpg" | "webp";
-
-export type BatchTarget = {
-  width: number;
-  height: number;
-  fit: Fit;
-  /** Painted behind the image, which matters for Fit and for JPG. */
-  background: string;
-};
 
 export type BatchOutput = {
   format: OutFormat;
@@ -39,8 +34,8 @@ export type BatchSource = {
   file: File;
 };
 
-export const defaultTarget: BatchTarget = { width: 2000, height: 2000, fit: "fit", background: "#FFFFFF" };
-export const defaultOutput: BatchOutput = { format: "png", quality: 90, suffix: "_resized", flatten: false };
+// Nothing is resized in this pass, so the default suffix must not claim it was.
+export const defaultOutput: BatchOutput = { format: "png", quality: 90, suffix: "_converted", flatten: false };
 
 const IMAGE_PATTERN = /\.(png|jpe?g|webp|avif|gif|bmp|tiff?)$/i;
 
@@ -81,26 +76,6 @@ export function summarise(sources: BatchSource[]) {
   };
 }
 
-/* ------------------------------------------------------------------ geometry */
-
-export type Rect = { x: number; y: number; w: number; h: number };
-
-/**
- * Where to draw a source of srcW x srcH inside a width x height target.
- * Fit contains, Fill covers and overflows, Stretch ignores the source ratio.
- */
-export function drawRect(srcW: number, srcH: number, width: number, height: number, fit: Fit): Rect {
-  if (srcW <= 0 || srcH <= 0) return { x: 0, y: 0, w: width, h: height };
-  if (fit === "stretch") return { x: 0, y: 0, w: width, h: height };
-
-  const scale = fit === "fill"
-    ? Math.max(width / srcW, height / srcH)
-    : Math.min(width / srcW, height / srcH);
-  const w = srcW * scale;
-  const h = srcH * scale;
-  return { x: (width - w) / 2, y: (height - h) / 2, w, h };
-}
-
 /* -------------------------------------------------------------------- naming */
 
 /** The path each source is written to inside the zip. */
@@ -128,13 +103,16 @@ export function planNames(sources: BatchSource[], output: BatchOutput): Map<numb
 export const mimeFor = (format: OutFormat) =>
   format === "png" ? "image/png" : format === "jpg" ? "image/jpeg" : "image/webp";
 
-/** Rough output size, for the estimate shown before a run. */
-export function estimateBytes(sources: BatchSource[], target: BatchTarget, output: BatchOutput) {
-  const pixels = target.width * target.height;
-  const perImage = output.format === "png"
-    ? pixels * 1.4
-    : pixels * (0.08 + (output.quality / 100) * 0.32);
-  return Math.round(perImage * sources.length);
+/**
+ * Rough output size, for the estimate shown before a run. Each image keeps its
+ * own dimensions, so the estimate follows the sources rather than one target.
+ */
+export function estimateBytes(sources: BatchSource[], output: BatchOutput) {
+  return sources.reduce((total, source) => {
+    // A source byte count is the best proxy available before decoding.
+    const ratio = output.format === "png" ? 1.15 : (0.12 + (output.quality / 100) * 0.5);
+    return total + source.bytes * ratio;
+  }, 0);
 }
 
 export function formatBytes(bytes: number) {
@@ -239,25 +217,22 @@ export function makeZip(entries: ZipEntry[]): Uint8Array {
 
 /* ------------------------------------------------------------------ browser */
 
-/** Resize one source against the target. Browser only. */
-export async function renderOne(source: BatchSource, target: BatchTarget, output: BatchOutput): Promise<Uint8Array> {
+/** Re-encode one source at its own size. Browser only. */
+export async function renderOne(source: BatchSource, output: BatchOutput): Promise<Uint8Array> {
   const bitmap = await createImageBitmap(source.file);
   try {
     const canvas = document.createElement("canvas");
-    canvas.width = target.width;
-    canvas.height = target.height;
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas is unavailable");
 
-    // JPG has no alpha, and Fit leaves margins, so the background is painted
-    // rather than left transparent.
-    context.fillStyle = target.background;
-    context.fillRect(0, 0, target.width, target.height);
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
-
-    const rect = drawRect(bitmap.width, bitmap.height, target.width, target.height, target.fit);
-    context.drawImage(bitmap, rect.x, rect.y, rect.w, rect.h);
+    // JPG has no alpha channel, so transparency has to land on something.
+    if (output.format === "jpg") {
+      context.fillStyle = "#FFFFFF";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+    context.drawImage(bitmap, 0, 0);
 
     const blob = await new Promise<Blob | null>((resolve) =>
       canvas.toBlob(resolve, mimeFor(output.format), output.format === "png" ? undefined : output.quality / 100));
@@ -276,12 +251,11 @@ export type BatchProgress = {
 };
 
 /**
- * Resize every source and return the zip. `onProgress` fires per file and
+ * Re-encode every source and return the zip. `onProgress` fires per file and
  * `shouldStop` is polled between files so Cancel takes effect promptly.
  */
 export async function runBatch(
   sources: BatchSource[],
-  target: BatchTarget,
   output: BatchOutput,
   onProgress: (progress: BatchProgress) => void,
   shouldStop: () => boolean = () => false,
@@ -295,7 +269,7 @@ export async function runBatch(
     progress.current = source.path;
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
-      entries.push({ name: names.get(source.id)!, data: await renderOne(source, target, output) });
+      entries.push({ name: names.get(source.id)!, data: await renderOne(source, output) });
     } catch (error) {
       progress.failed.push({ name: source.path, reason: (error as Error).message || "could not be read" });
     }
@@ -323,19 +297,6 @@ export function downloadZip(zip: Uint8Array, filename = "minima-batch.zip") {
 export function demo() {
   const file = (name: string, path = name, bytes = 1000) =>
     ({ id: 0, name, path, bytes, file: null as unknown as File }) as BatchSource;
-
-  // Geometry: Fit contains, Fill covers, Stretch fills exactly.
-  const fit = drawRect(1000, 500, 2000, 2000, "fit");
-  console.assert(fit.w === 2000 && fit.h === 1000, "Fit scales the long edge to the target");
-  console.assert(fit.y === 500 && fit.x === 0, "Fit centres the letterbox");
-  const fill = drawRect(1000, 500, 2000, 2000, "fill");
-  console.assert(fill.h === 2000 && fill.w === 4000, "Fill covers the target");
-  console.assert(fill.x === -1000, "Fill overflows evenly on both sides");
-  const stretch = drawRect(1000, 500, 2000, 2000, "stretch");
-  console.assert(stretch.w === 2000 && stretch.h === 2000 && stretch.x === 0, "Stretch ignores the source ratio");
-  console.assert(drawRect(0, 0, 800, 600, "fit").w === 800, "a degenerate source does not divide by zero");
-  const square = drawRect(1200, 1200, 1000, 1000, "fit");
-  console.assert(square.w === 1000 && square.x === 0 && square.y === 0, "a matching ratio needs no offset");
 
   // Naming: folders preserved or flattened, collisions resolved, extension swapped.
   const sources = [
@@ -391,11 +352,17 @@ export function demo() {
   console.assert(formatBytes(512) === "512 B", "bytes stay bytes");
   console.assert(formatBytes(2048) === "2.0 KB", "kilobytes get one decimal");
   console.assert(formatBytes(5 * 1024 * 1024) === "5.0 MB", "megabytes too");
-  console.assert(estimateBytes(sources, defaultTarget, defaultOutput) > 0, "an estimate is produced");
+  console.assert(estimateBytes(sources, defaultOutput) > 0, "an estimate is produced");
   console.assert(
-    estimateBytes(sources, defaultTarget, { ...defaultOutput, format: "jpg", quality: 50 })
-    < estimateBytes(sources, defaultTarget, defaultOutput),
+    estimateBytes(sources, { ...defaultOutput, format: "jpg", quality: 50 })
+    < estimateBytes(sources, defaultOutput),
     "a lossy format estimates smaller than png",
+  );
+  console.assert(estimateBytes([], defaultOutput) === 0, "no sources estimate nothing");
+  console.assert(
+    estimateBytes(sources, { ...defaultOutput, format: "jpg", quality: 100 })
+    > estimateBytes(sources, { ...defaultOutput, format: "jpg", quality: 40 }),
+    "higher quality estimates larger",
   );
 
   console.log("batch.ts: all checks passed");
