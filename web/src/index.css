@@ -35,3 +35,51 @@
 .editor-pane{grid-template-rows:minmax(0,1fr) 80px}.editor-stage{padding:18px}.portrait-canvas{height:min(100%,356px)}.filmstrip{height:80px;padding:6px;gap:5px}.filmstrip button{min-width:222px;grid-template:1fr 1fr/54px 1fr;padding:4px}.filmstrip .product-placeholder{min-height:66px}
 @media(max-width:980px){.workspace{grid-template-columns:minmax(0,1fr);overflow:hidden}.inspector,.idle-inspector{display:none}.statusbar{margin-right:0}.asset-grid{grid-template-columns:repeat(auto-fill,minmax(128px,1fr))}}
 @media(max-width:640px){.minima-app{grid-template:44px minmax(0,1fr) 48px/1fr}.window-controls,.back-button,.topbar-left>button:nth-last-child(-n+2){display:none}.topbar{height:44px}.rail{grid-row:3;grid-column:1;display:flex}.rail-bottom{display:flex}.rail-bottom>button:first-child{display:none}.rail button{min-height:44px}.workspace{grid-column:1;grid-row:2}.statusbar{display:none}.drop-zone{width:92%;height:280px}.asset-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* ---- Flow wiring (see design-system/minima-resize/pages/flow.md) ---- */
+.rail-collapsed{grid-template-columns:0 minmax(0,1fr)}.rail-collapsed .rail{display:none}
+.inspector-collapsed .workspace{grid-template-columns:minmax(0,1fr)}.inspector-collapsed .statusbar{margin-right:0}
+.topbar button[disabled],.rail button[disabled],.view-switch button[disabled],.zoom-control button[disabled]{opacity:.38;cursor:not-allowed}
+.zoom-control button{width:20px;height:20px;border:0;background:transparent;color:inherit;display:grid;place-items:center}
+.zoom-control span{min-width:34px;text-align:center}
+
+/* Import screen: drop zone plus the file/folder/policy row from the reference. */
+.import-actions{display:flex;align-items:center;gap:8px;margin-top:16px;flex-wrap:wrap;justify-content:center}
+.policy-row{display:flex;align-items:center;gap:8px;color:#4a4a4a;font-size:11px}
+.policy-row [data-slot=select-trigger]{height:30px;font-size:11px;background:#fff;color:#222;border-color:#c8c8c8}
+
+/* Gallery toolbar tools */
+.toolbar-tools{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.sort-select{height:30px;font-size:11px;width:120px}
+.toolbar-tools button{height:30px;font-size:11px}
+.gallery-empty{grid-column:1/-1;color:#7d7d7d;font-size:12px;padding:24px 0;text-align:center}
+
+/* Editor canvas: percent-positioned object, optional side-by-side compare. */
+.editor-stage{position:relative;align-content:center}
+.single-canvas,.compare-split{display:grid;place-items:center;gap:14px;width:100%;height:100%;min-height:0}
+.compare-split{grid-template-columns:1fr 1fr}
+.editor-stage .canvas{height:min(100%,356px);max-width:100%;transform-origin:center}
+.compare-split .canvas{height:min(100%,330px)}
+.editor-stage .compare-labels{position:absolute;top:4px;left:0;right:0;margin:0;z-index:2}
+.original-object{position:absolute;inset:14%;display:flex;align-items:center;justify-content:center}
+.original-object .product-large{width:100%;height:100%}
+.editable-object{inset:auto}
+.editable-object .product-large{width:100%;height:100%}
+
+/* Inspector additions: object scale readout and the apply-scope radio group. */
+.inspector-note{margin:0;color:#8a8a8a;font-size:10px}
+.scope-list{display:grid;gap:3px}
+.scope-list button{display:flex;align-items:center;gap:7px;border:0;background:transparent;color:#bbb;font-size:10px;padding:5px 4px;border-radius:5px;text-align:left}
+.scope-list button span{width:10px;height:10px;border:1px solid #6a6a6a;border-radius:50%;flex:0 0 auto}
+.scope-list button.active{background:#303030;color:#fff}
+.scope-list button.active span{border-color:#fff;box-shadow:inset 0 0 0 2px #1a1a1a;background:#fff}
+
+/* Review, presets, export, shortcut overlays. */
+.review-heading-actions{display:flex;gap:8px}
+.review-card button{margin-top:auto}
+.preset-list button{position:relative}.preset-current{width:14px;height:14px;margin-left:auto;color:#9ad3a8}
+.export-warning{display:flex;align-items:center;gap:5px;margin:0;color:#e0a07a;font-size:10px}
+.progress-dialog{max-width:460px}
+.error-log{display:grid;gap:3px;max-height:140px;overflow:auto;border:1px solid #4a3434;border-radius:6px;background:#241c1c;padding:8px;color:#e0a0a0;font-size:10px}
+.shortcut-list{display:grid;gap:0}
+@media(max-width:980px){.rail-collapsed{grid-template-columns:0 minmax(0,1fr)}.compare-split{grid-template-columns:1fr}}
