@@ -35,10 +35,16 @@ is served from `/<repo>/`, so the base path has to match the target:
 | Target | Command | URL |
 |---|---|---|
 | `project-m2` (this repo, `main` + `/docs`) | `npm run build` | https://shishiba389.github.io/project-m2/ |
-| `minima-resize` (build output only, `main` + root) | `BASE_PATH=/minima-resize/ npm run build`, then copy `docs/` to that repo's root | https://shishiba389.github.io/minima-resize/ |
+| `minima-resize` (build output only, `main` + root) | `BASE_PATH=minima-resize npm run build`, then copy `docs/` to that repo's root | https://shishiba389.github.io/minima-resize/ |
 
-Building with the wrong base leaves the page blank: `index.html` asks for
-`/<other-repo>/assets/...` and Pages answers 404.
+`BASE_PATH` takes the repo name with or without slashes. Pass it unslashed:
+Git Bash on Windows rewrites a leading `/` into an absolute Windows path, so
+`BASE_PATH=/minima-resize/` silently produces
+`/Program Files/Git/minima-resize/`.
+
+After publishing the mirror, **run `npm run build` again** so `docs/` goes back
+to this repo's base. Building with the wrong base leaves the page blank:
+`index.html` asks for `/<other-repo>/assets/...` and Pages answers 404.
 
 There is no ChatGPT Sites, Vinext, Cloudflare Worker, authentication,
 database, or runtime dependency in this build.
