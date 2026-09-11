@@ -48,7 +48,17 @@ export const PRESETS: Preset[] = [
   { id: "my-brand", label: "My Brand Preset", category: "Custom", width: 1801, height: 2600, safeX: 16.66, safeY: 10, background: "#F1EDE7", align: "center", fit: "Fit" },
 ];
 
-export const presetById = (id: string) => PRESETS.find((preset) => preset.id === id) ?? PRESETS[0];
+/** Custom presets live in app state, so callers pass their own list. */
+export const presetById = (id: string, list: Preset[] = PRESETS) => list.find((preset) => preset.id === id) ?? list[0];
+
+/** A new custom preset seeded from whatever is currently in the inspector. */
+export function customPreset(label: string, from: Preset, list: Preset[]): Preset {
+  const base = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "preset";
+  let id = base;
+  let n = 2;
+  while (list.some((preset) => preset.id === id)) id = base + "-" + n++;
+  return { ...from, id, label, category: "Custom" };
+}
 
 export function ratioLabel(width: number, height: number) {
   const divisor = gcd(width, height);
@@ -60,15 +70,22 @@ function gcd(a: number, b: number): number {
 
 /* ------------------------------------------------------------------ assets */
 
+export type Format = "png" | "jpg" | "webp" | "tiff";
+export type Resolution = "large" | "medium" | "small";
+export type WarningReason = "aspect" | "safe";
+
 export type Asset = {
   id: number;
   name: string;
   kind: "shoe" | "beauty" | "fashion" | "bottle";
+  format: Format;
   /** Source pixel dimensions — drives the aspect-mismatch warning. */
   src: { w: number; h: number };
   /** Set once a preset has been applied to this asset. */
   processed: boolean;
-  /** Auto-fix (crop/pad) accepted, so the mismatch warning is resolved. */
+  /** Content was pushed past the safe area by a Fill/Stretch apply. */
+  overflow: boolean;
+  /** Auto-fix (crop/pad) accepted, so every warning on this asset is resolved. */
   fixed: boolean;
   /** Unreadable file; never resolvable by re-running the preset. */
   corrupt: boolean;
@@ -80,8 +97,22 @@ const MISMATCH_TOLERANCE = 0.02;
 export function statusOf(asset: Asset, preset: Preset): Status {
   if (asset.corrupt) return "Error";
   if (!asset.processed) return "Pending";
-  if (!asset.fixed && mismatch(asset, preset)) return "Warning";
-  return "Completed";
+  return warningReason(asset, preset) ? "Warning" : "Completed";
+}
+
+/** Why an asset is warned, so Review can explain it and auto-fix can clear it. */
+export function warningReason(asset: Asset, preset: Preset): WarningReason | null {
+  if (asset.corrupt || !asset.processed || asset.fixed) return null;
+  if (mismatch(asset, preset)) return "aspect";
+  if (asset.overflow) return "safe";
+  return null;
+}
+
+export function resolutionOf(asset: Asset): Resolution {
+  const longest = Math.max(asset.src.w, asset.src.h);
+  if (longest >= 2400) return "large";
+  if (longest >= 1200) return "medium";
+  return "small";
 }
 
 export function mismatch(asset: Asset, preset: Preset) {
@@ -94,6 +125,49 @@ export function countByStatus(assets: Asset[], preset: Preset) {
   const counts = { All: assets.length, Completed: 0, Pending: 0, Warning: 0, Error: 0 };
   for (const asset of assets) counts[statusOf(asset, preset)] += 1;
   return counts;
+}
+
+/* ------------------------------------------------------------------- filter */
+
+export type GalleryFilter = {
+  status: "All" | Status;
+  query: string;
+  formats: Format[];
+  resolutions: Resolution[];
+  errorTypes: (WarningReason | "corrupt")[];
+  sort: "name" | "date" | "size";
+};
+
+export const emptyFilter: GalleryFilter = { status: "All", query: "", formats: [], resolutions: [], errorTypes: [], sort: "name" };
+
+/** Empty facet arrays mean "no restriction", which is what an unticked menu means. */
+export function filterAssets(assets: Asset[], preset: Preset, filter: GalleryFilter) {
+  const needle = filter.query.trim().toLowerCase();
+  const rows = assets.filter((asset) => {
+    if (filter.status !== "All" && statusOf(asset, preset) !== filter.status) return false;
+    if (needle && !asset.name.toLowerCase().includes(needle)) return false;
+    if (filter.formats.length && !filter.formats.includes(asset.format)) return false;
+    if (filter.resolutions.length && !filter.resolutions.includes(resolutionOf(asset))) return false;
+    if (filter.errorTypes.length) {
+      const reason = asset.corrupt ? "corrupt" : warningReason(asset, preset);
+      if (!reason || !filter.errorTypes.includes(reason)) return false;
+    }
+    return true;
+  });
+  const order = filter.sort === "name"
+    ? (a: Asset, b: Asset) => a.name.localeCompare(b.name, undefined, { numeric: true })
+    : filter.sort === "date" ? (a: Asset, b: Asset) => b.id - a.id
+    : (a: Asset, b: Asset) => sourceBytes(b) - sourceBytes(a);
+  return rows.sort(order);
+}
+
+export const sourceBytes = (asset: Asset) => asset.src.w * asset.src.h * 3;
+
+/** Filename an export would write, given the naming options. */
+export function outputName(asset: Asset, format: Format, suffix: string, keepName: boolean) {
+  const dot = asset.name.lastIndexOf(".");
+  const stem = keepName && dot > 0 ? asset.name.slice(0, dot) : `image_${asset.id}`;
+  return `${stem}${suffix}.${format}`;
 }
 
 /* ------------------------------------------------------------------- import */
@@ -120,8 +194,10 @@ export function mergeImport(
       id: Date.now() + index,
       name: file.name,
       kind: kinds[index % kinds.length],
+      format: formatOf(file.name),
       src: file.src ?? { w: 1801, h: 2600 },
       processed: false,
+      overflow: false,
       fixed: false,
       corrupt: false,
     };
@@ -147,6 +223,14 @@ export function mergeImport(
   });
 
   return { assets, added, skipped, renamed };
+}
+
+function formatOf(name: string): Format {
+  const ext = name.slice(name.lastIndexOf(".") + 1).toLowerCase();
+  if (ext === "jpg" || ext === "jpeg") return "jpg";
+  if (ext === "webp") return "webp";
+  if (ext === "tif" || ext === "tiff") return "tiff";
+  return "png";
 }
 
 function nextFreeName(name: string, taken: Set<string>) {
@@ -199,20 +283,75 @@ function splitAlign(align: Align): ["top" | "middle" | "bottom", "left" | "cente
   return [vertical, horizontal];
 }
 
-/** Snap a dragged box to the safe-area edges and to the canvas centre lines. */
-export function snapBox(box: Box, safeX: number, safeY: number, tolerance = 1.2): Box {
-  const pull = (value: number, targets: number[]) => {
-    for (const target of targets) if (Math.abs(value - target) <= tolerance) return target;
-    return value;
+export type Snapping = { safe: boolean; grid: boolean };
+
+/** Thirds grid, matching the 3×3 overlay drawn on the canvas. */
+const GRID_LINES = [0, 100 / 3, 200 / 3, 100];
+
+/**
+ * Snap a dragged box to whichever guides are switched on: the safe-area edges
+ * and canvas centre lines, and the thirds grid. With both off the box is free.
+ */
+export function snapBox(box: Box, safeX: number, safeY: number, snapping: Snapping = { safe: true, grid: false }, tolerance = 1.2): Box {
+  const targets = (inset: number, extent: number) => {
+    const list: number[] = [];
+    if (snapping.safe) list.push(inset, (100 - extent) / 2, 100 - inset - extent);
+    if (snapping.grid) list.push(...GRID_LINES, ...GRID_LINES.map((line) => line - extent));
+    return list;
   };
-  const x = pull(box.x, [safeX, (100 - box.w) / 2, 100 - safeX - box.w]);
-  const y = pull(box.y, [safeY, (100 - box.h) / 2, 100 - safeY - box.h]);
-  return { ...box, x, y };
+  const pull = (value: number, list: number[]) => {
+    let best = value;
+    let distance = tolerance;
+    for (const target of list) {
+      const gap = Math.abs(value - target);
+      if (gap <= distance) { best = target; distance = gap; }
+    }
+    return best;
+  };
+  return { ...box, x: pull(box.x, targets(safeX, box.w)), y: pull(box.y, targets(safeY, box.h)) };
 }
 
 /** Scale of the placed object relative to its source pixels, as a percentage. */
 export function objectScale(box: Box, preset: Preset, asset: Asset) {
   return Math.round(((box.w / 100) * preset.width * 100) / asset.src.w);
+}
+
+/* ---------------------------------------------------------------- document */
+
+/** Everything the resize step owns. Undo/redo snapshots exactly this. */
+export type Doc = {
+  presetId: string;
+  width: number;
+  height: number;
+  lock: boolean;
+  /** Ratio captured when the aspect lock engaged, so typing stays predictable. */
+  ratio: number;
+  fit: Fit;
+  align: Align;
+  safeX: number;
+  safeY: number;
+  background: string;
+  flipH: boolean;
+  flipV: boolean;
+  box: Box;
+};
+
+export const srcRatio = (asset: Asset) => asset.src.w / asset.src.h;
+export const megabytes = (asset: Asset) => sourceBytes(asset) / 1_048_576;
+
+export function docFromPreset(preset: Preset, asset: Asset): Doc {
+  const canvasRatio = preset.width / preset.height;
+  return {
+    presetId: preset.id, width: preset.width, height: preset.height, lock: true, ratio: canvasRatio,
+    fit: preset.fit, align: preset.align, safeX: preset.safeX, safeY: preset.safeY,
+    background: preset.background, flipH: false, flipV: false,
+    box: fitBox(preset.fit, srcRatio(asset), canvasRatio, preset.safeX, preset.safeY),
+  };
+}
+
+/** The live resize target: the preset row with the inspector's edits layered on. */
+export function docTarget(doc: Doc, presets: Preset[]): Preset {
+  return { ...presetById(doc.presetId, presets), width: doc.width, height: doc.height, safeX: doc.safeX, safeY: doc.safeY, align: doc.align, fit: doc.fit, background: doc.background };
 }
 
 /* -------------------------------------------------------------------- scope */
@@ -239,14 +378,46 @@ export function backTarget(screen: Screen, hasAssets: boolean): Screen | null {
 export function demo() {
   const zalando = presetById("zalando");
   const square = presetById("amazon");
+  const base: Asset = { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false };
 
   // Status is derived, never stored.
-  const base: Asset = { id: 1, name: "a.png", kind: "shoe", src: { w: 1801, h: 2600 }, processed: false, fixed: false, corrupt: false };
   console.assert(statusOf(base, zalando) === "Pending", "unprocessed reads Pending");
   console.assert(statusOf({ ...base, processed: true }, zalando) === "Completed", "9:13 source conforms to 9:13 preset");
   console.assert(statusOf({ ...base, processed: true }, square) === "Warning", "9:13 source mismatches 1:1 preset");
   console.assert(statusOf({ ...base, processed: true, fixed: true }, square) === "Completed", "auto-fix clears the mismatch");
   console.assert(statusOf({ ...base, processed: true, corrupt: true }, zalando) === "Error", "corrupt outranks everything");
+
+  // Warning reasons drive both the Review copy and the error-type filter.
+  console.assert(warningReason({ ...base, processed: true }, square) === "aspect", "ratio drift reports aspect");
+  console.assert(warningReason({ ...base, processed: true, overflow: true }, zalando) === "safe", "overflow reports safe area");
+  console.assert(warningReason({ ...base, processed: true, overflow: true }, square) === "aspect", "aspect outranks overflow");
+  console.assert(warningReason(base, square) === null, "an unprocessed asset is not yet warned");
+  console.assert(statusOf({ ...base, processed: true, overflow: true }, zalando) === "Warning", "overflow alone still warns");
+
+  console.assert(resolutionOf(base) === "large", "2600px longest edge is large");
+  console.assert(resolutionOf({ ...base, src: { w: 1600, h: 1600 } }) === "medium", "1600px is medium");
+  console.assert(resolutionOf({ ...base, src: { w: 800, h: 600 } }) === "small", "800px is small");
+
+  // The funnel menu: empty facets mean no restriction, ticked facets narrow.
+  const batch: Asset[] = [
+    base,
+    { ...base, id: 2, name: "b.jpg", format: "jpg", src: { w: 900, h: 900 }, processed: true },
+    { ...base, id: 3, name: "c.webp", format: "webp", processed: true, corrupt: true },
+  ];
+  console.assert(filterAssets(batch, zalando, emptyFilter).length === 3, "an empty filter hides nothing");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, formats: ["jpg"] }).length === 1, "format facet narrows");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, resolutions: ["small"] })[0].id === 2, "resolution facet narrows");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, errorTypes: ["corrupt"] })[0].id === 3, "error-type facet narrows");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, errorTypes: ["aspect"] })[0].id === 2, "aspect facet finds the mismatch");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, status: "Pending" }).length === 1, "status facet narrows");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, query: "b." }).length === 1, "search narrows");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, formats: ["jpg"], resolutions: ["large"] }).length === 0, "facets combine with AND");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, sort: "size" })[2].id === 2, "size sort puts the smallest last");
+
+  // Export naming has to match what the dialog promises.
+  console.assert(outputName(base, "jpg", "_resized", true) === "a_resized.jpg", "keeps the stem and swaps the extension");
+  console.assert(outputName(base, "png", "", true) === "a.png", "an empty suffix is allowed");
+  console.assert(outputName(base, "png", "_r", false) === "image_1_r.png", "dropping the name falls back to the id");
 
   // Import policies.
   const existing = [base];
@@ -259,7 +430,13 @@ export function demo() {
   console.assert(renamedOnce.assets.some((asset) => asset.name === "a (2).png"), "rename suffixes before the extension");
   const renamedTwice = mergeImport(renamedOnce.assets, [{ name: "a.png" }], "rename");
   console.assert(renamedTwice.assets.some((asset) => asset.name === "a (3).png"), "rename keeps counting past taken names");
-  console.assert(mergeImport(existing, [{ name: "b.png" }], "skip").added === 1, "fresh names always import");
+  console.assert(mergeImport(existing, [{ name: "b.jpeg" }], "skip").assets[0].format === "jpg", "format comes from the extension");
+
+  // Custom presets get a unique slug and land in the Custom category.
+  const made = customPreset("My Brand Preset", zalando, PRESETS);
+  console.assert(made.category === "Custom", "a new preset is custom");
+  console.assert(made.id !== "my-brand", "a clashing slug is suffixed");
+  console.assert(customPreset("Fresh One", zalando, PRESETS).id === "fresh-one", "a free slug is used as-is");
 
   // Fit sizing stays inside the safe rect; Fill covers it.
   const canvasRatio = zalando.width / zalando.height;
@@ -279,9 +456,13 @@ export function demo() {
   console.assert(anchor("center", box, 10, 5).x === 30, "centre ignores the inset");
   console.assert(anchor("right", box, 10, 5).y === 30, "single-axis alignment centres the other axis");
 
-  // Snapping only bites near a target.
+  // Snapping only bites near a target, and only for the guides that are on.
   console.assert(snapBox({ x: 10.5, y: 50, w: 40, h: 40 }, 10, 5).x === 10, "near edge snaps");
   console.assert(snapBox({ x: 20, y: 50, w: 40, h: 40 }, 10, 5).x === 20, "far edge is left alone");
+  console.assert(snapBox({ x: 10.5, y: 50, w: 40, h: 40 }, 10, 5, { safe: false, grid: false }).x === 10.5, "with both guides off nothing snaps");
+  console.assert(Math.abs(snapBox({ x: 33.6, y: 50, w: 40, h: 40 }, 10, 5, { safe: false, grid: true }).x - 100 / 3) < 0.001, "the grid pulls to a third");
+  console.assert(snapBox({ x: 33.6, y: 50, w: 40, h: 40 }, 10, 5, { safe: false, grid: false }).x === 33.6, "the grid is ignored when off");
+  console.assert(snapBox({ x: 29.6, y: 50, w: 40, h: 40 }, 10, 5, { safe: true, grid: true }).x === 30, "the nearest target wins when guides overlap");
 
   // Scope and Back are single rules, used by every button.
   const many: Asset[] = [base, { ...base, id: 2, name: "b.png" }, { ...base, id: 3, name: "c.png" }];
