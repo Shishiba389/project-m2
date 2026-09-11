@@ -1,7 +1,7 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
-  Check, Cloud, Copy, FileImage, FolderOpen, Grid2X2, Layers3, ListFilter, Package, Pencil,
-  Plus, Search, Share2, Trash2, TriangleAlert, Upload, Zap,
+  Check, ChevronLeft, ChevronRight, Cloud, Copy, FileImage, FolderOpen, Grid2X2, Layers3,
+  ListFilter, Package, Pencil, Plus, Search, Share2, Trash2, TriangleAlert, Upload, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -204,12 +204,18 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
 
 /* -------------------------------------------------------------------- editor */
 
-export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onToggleGrid }: {
+export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onToggleGrid, onStep }: {
   asset: Asset; assets: Asset[]; selected: number[]; doc: Doc; zoom: number;
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
-  onBox: (box: Box) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void; onToggleGrid: () => void;
+  onBox: (box: Box) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
+  onToggleGrid: () => void; onStep: (delta: number) => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
+  const activeThumb = useRef<HTMLButtonElement>(null);
+  // Paging past the visible thumbs should bring the new one into view.
+  useEffect(() => {
+    activeThumb.current?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [asset.id]);
   const splitRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; box: Box } | null>(null);
 
@@ -287,12 +293,25 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
           : <div className="single-canvas">{compareView === "before" ? original : resized}</div>
         : <div className="single-canvas">{resized}</div>}
     </div>
-    <div className="filmstrip">{assets.map((item) => <button key={item.id} className={item.id === asset.id ? "active" : ""} onClick={() => onChoose(item)}>
-      <ProductPlaceholder kind={item.kind} />
-      <span>{item.name.replace(/\.[^.]+$/, "")}</span>
-      <StatusBadge status={statusOf(item, target)} />
-      {selected.includes(item.id) && <Check className="film-check" />}
-    </button>)}</div>
+    <div className="filmstrip">
+      <div className="strip-nav">
+        <button aria-label="Previous image" onClick={() => onStep(-1)}><ChevronLeft /></button>
+        <span>{assets.findIndex((item) => item.id === asset.id) + 1} / {assets.length}</span>
+        <button aria-label="Next image" onClick={() => onStep(1)}><ChevronRight /></button>
+      </div>
+      <div className="strip-scroll">{assets.map((item) => {
+        const status = statusOf(item, target);
+        const active = item.id === asset.id;
+        return <button key={item.id} ref={active ? activeThumb : undefined} className={active ? "active" : ""}
+          aria-current={active ? "true" : undefined}
+          title={`${item.name} — ${status}`} aria-label={`${item.name}, ${status}`}
+          onClick={() => onChoose(item)}>
+          <ProductPlaceholder kind={item.kind} />
+          <span className={`strip-dot dot-${status.toLowerCase()}`} aria-hidden="true" />
+          {selected.includes(item.id) && <Check className="film-check" />}
+        </button>;
+      })}</div>
+    </div>
   </div>;
 }
 

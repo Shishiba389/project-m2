@@ -530,3 +530,212 @@ body { background: var(--app); display: grid; place-items: center; }
 /* A flex column stretched the badge across the card; a status pill should hug
    its label. */
 .review-card .status-badge, .asset-card-footer .status-badge { align-self: flex-start }
+
+/* ============================================================================
+   Batch resize — a deliberately different surface.
+
+   The editor is a dense three-pane workspace for one image at a time. Batch is
+   one decision applied to hundreds of files, so it reads as a worksheet: a
+   single centred column, numbered steps, generous spacing, and one action at
+   the end. Sharing the editor chrome would imply the two lanes are the same job.
+   ========================================================================== */
+
+.batch-pane {
+  grid-column: 1 / -1; min-height: 0; overflow: auto;
+  background: var(--pane); padding: 28px 24px 40px;
+}
+.batch-sheet { width: min(720px, 100%); margin: 0 auto; display: grid; gap: 16px }
+
+.batch-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px; padding: 20px 22px;
+}
+.batch-head h1 { margin: 0; font-size: 21px; letter-spacing: -.01em; color: var(--ink) }
+.batch-head p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: var(--ink-10); max-width: 42ch }
+.batch-source { display: flex; gap: 22px; margin: 0 }
+.batch-source div { display: grid; gap: 3px }
+.batch-source dt { font-size: 10px; letter-spacing: .08em; color: var(--ink-11) }
+.batch-source dd { margin: 0; font-size: 17px; font-weight: 600; color: var(--ink-3) }
+
+.batch-step {
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px;
+  padding: 20px 22px; display: grid; gap: 11px;
+}
+.batch-step h2 {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 3px;
+  font-size: 14px; font-weight: 600; color: var(--ink-3);
+}
+.batch-step h2 span {
+  width: 24px; height: 24px; display: grid; place-items: center; border-radius: 7px;
+  background: var(--control); color: var(--ink-9); font-size: 10px; font-weight: 700; letter-spacing: .04em;
+}
+.batch-hint { margin: 0; font-size: 11px; line-height: 1.55; color: var(--ink-11); max-width: 62ch }
+.batch-hint code {
+  margin-left: 5px; padding: 2px 6px; border-radius: 5px;
+  background: var(--tile-5); color: var(--ink-4); font-size: 10px;
+}
+
+.batch-size { display: flex; align-items: flex-end; gap: 9px }
+.batch-size label { display: grid; gap: 5px; flex: 1; min-width: 0 }
+.batch-size input {
+  width: 100%; height: 42px; padding: 0 12px; font-size: 17px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line-6); border-radius: 9px; background: var(--control-2); color: var(--ink);
+}
+.batch-times { padding-bottom: 12px; color: var(--ink-11) }
+.batch-unit { padding-bottom: 13px; font-size: 11px; color: var(--ink-11) }
+
+.ratio-chips, .format-chips { display: flex; flex-wrap: wrap; gap: 6px }
+.ratio-chips button, .format-chips button {
+  height: 32px; padding: 0 13px; border: 1px solid var(--line-5); border-radius: 99px;
+  background: var(--tile-4); color: var(--ink-8); font-size: 12px; transition: .18s ease;
+}
+.ratio-chips button:hover, .format-chips button:hover { border-color: var(--ink-10); color: var(--ink-4) }
+.ratio-chips button.active, .format-chips button.active {
+  background: var(--ink-3); border-color: var(--ink-3); color: var(--panel); font-weight: 500;
+}
+
+.fit-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px }
+.fit-cards button {
+  display: grid; gap: 4px; text-align: left; padding: 11px 12px;
+  border: 1px solid var(--line-5); border-radius: 10px; background: var(--tile-4); transition: .18s ease;
+}
+.fit-cards button:hover { border-color: var(--ink-10) }
+.fit-cards button.active { border-color: var(--ink-4); background: var(--tile-6); box-shadow: inset 0 0 0 1.5px var(--ink-4) }
+.fit-cards strong { font-size: 12px; color: var(--ink-3) }
+.fit-cards span { font-size: 10px; line-height: 1.4; color: var(--ink-11) }
+@media (max-width: 620px) { .fit-cards { grid-template-columns: 1fr } }
+
+.batch-bg { display: grid; gap: 6px }
+.batch-bg .color-row { display: grid; grid-template-columns: 40px 1fr; gap: 7px; align-items: center }
+.batch-bg input[type=color] { width: 40px; height: 34px }
+
+.batch-previews { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px }
+.batch-previews figure { margin: 0; display: grid; gap: 6px }
+.preview-frame {
+  /* No max-height: it wins over aspect-ratio and the preview then shows a
+     frame the output will not have. */
+  width: 100%; border: 1px solid var(--line-4); border-radius: 8px; overflow: hidden;
+  display: grid; place-items: center;
+}
+.preview-frame img { width: 100%; height: 100%; display: block }
+.batch-previews figcaption {
+  font-size: 10px; color: var(--ink-11); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 620px) { .batch-previews { grid-template-columns: 1fr } }
+
+.batch-field { display: grid; gap: 6px }
+.batch-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+  border-top: 1px solid var(--line); padding-top: 13px;
+}
+.batch-toggle span { display: grid; gap: 2px }
+.batch-toggle strong { font-size: 12px; color: var(--ink-4) }
+.batch-toggle em { font-style: normal; font-size: 10px; color: var(--ink-11) }
+
+.batch-run {
+  position: sticky; bottom: -40px; z-index: 3;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px;
+  padding: 14px 18px; box-shadow: 0 -4px 20px #00000026;
+}
+.batch-run div { display: grid; gap: 2px }
+.batch-run strong { font-size: 13px; color: var(--ink-3) }
+.batch-run span { font-size: 11px; color: var(--ink-11) }
+.batch-run button { height: 40px; padding: 0 20px; font-size: 13px }
+
+.batch-progress, .batch-done, .batch-empty {
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px;
+  padding: 26px 24px; display: grid; gap: 11px; justify-items: center; text-align: center;
+}
+.batch-progress h2, .batch-done h2, .batch-empty h1 { margin: 0; font-size: 17px; color: var(--ink-2) }
+.batch-progress [data-slot=progress] { width: 100% }
+.batch-count { margin: 0; font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ink-3) }
+.batch-current {
+  margin: 0; max-width: 100%; font-size: 11px; color: var(--ink-11);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.batch-failed { display: flex; align-items: center; gap: 5px; margin: 0; font-size: 11px; color: var(--destructive) }
+.batch-done svg { width: 34px; height: 34px; color: #3f9d63 }
+.batch-done p { margin: 0; font-size: 12px; color: var(--ink-10) }
+.batch-done .error-log { width: 100%; text-align: left }
+.batch-done-actions { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center }
+.batch-empty svg { width: 30px; height: 30px; color: var(--ink-11) }
+.batch-empty p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-10); max-width: 48ch }
+
+/* -------------------------------------------------------- the import fork -- */
+.fork-dialog { max-width: 620px }
+.fork-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px }
+.fork-option {
+  position: relative; display: grid; gap: 7px; text-align: left; padding: 17px 16px 19px;
+  border: 1px solid var(--line-3); border-radius: 12px; background: var(--tile-4); transition: .18s ease;
+}
+.fork-option:hover { border-color: var(--ink-8); background: var(--tile-5) }
+.fork-option.recommended { border-color: var(--ink-6); box-shadow: inset 0 0 0 1px var(--ink-6) }
+.fork-option svg { width: 21px; height: 21px; color: var(--ink-8) }
+.fork-option strong { font-size: 14px; color: var(--ink-2) }
+.fork-option span { font-size: 11px; line-height: 1.5; color: var(--ink-10) }
+.fork-option em {
+  position: absolute; top: 12px; right: 12px; font-style: normal; font-size: 9px; letter-spacing: .06em;
+  background: var(--fill-strong); color: var(--on-strong); border-radius: 99px; padding: 3px 8px;
+}
+@media (max-width: 620px) { .fork-options { grid-template-columns: 1fr } }
+
+/* ------------------------------------------------------- editor filmstrip --
+   236px cards with clipped captions and a fat scrollbar, for a strip meant to
+   scan a whole batch. Square thumbs read faster, the status is a dot whose text
+   lives in the title and aria-label, and paging buttons mean the scrollbar is
+   never the only way to move. */
+.filmstrip { display: flex; align-items: center; gap: 10px; height: 96px; padding: 8px 10px }
+.strip-nav { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; color: var(--ink-9) }
+.strip-nav button {
+  width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--line-5);
+  border-radius: 6px; background: var(--tile-4); color: inherit;
+}
+.strip-nav button:hover { border-color: var(--ink-9); color: var(--ink-3) }
+.strip-nav button svg { width: 14px; height: 14px }
+.strip-nav span { min-width: 62px; text-align: center; font-size: 11px; font-variant-numeric: tabular-nums }
+.strip-scroll {
+  display: flex; gap: 7px; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden;
+  padding: 2px; scroll-behavior: smooth;
+  scrollbar-width: thin; scrollbar-color: var(--line-7) transparent;
+}
+.strip-scroll::-webkit-scrollbar { height: 6px }
+.strip-scroll::-webkit-scrollbar-thumb { background: var(--line-7); border-radius: 99px }
+.strip-scroll::-webkit-scrollbar-track { background: transparent }
+.strip-scroll > button {
+  /* The pixel-replica rule still sets min-width:236px, display:grid and a
+     two-column template on .filmstrip button at the same specificity, so each
+     of those has to be reset here rather than merely overridden by width. */
+  position: relative; flex: 0 0 auto; display: block; grid-template: none;
+  width: 68px; min-width: 0; height: 68px; padding: 0; overflow: hidden;
+  border: 1px solid var(--line-4); border-radius: 8px; background: var(--tile-5); transition: .16s ease;
+}
+.strip-scroll > button:hover { border-color: var(--ink-9) }
+.strip-scroll > button.active { border-color: var(--ink-3); box-shadow: 0 0 0 2px var(--ink-3) }
+.strip-scroll .product-placeholder { min-height: 100%; height: 100% }
+.strip-scroll .product-placeholder span { display: none }
+.strip-scroll .product-placeholder svg { width: 40%; height: 40% }
+.strip-dot {
+  position: absolute; left: 5px; bottom: 5px; width: 9px; height: 9px; border-radius: 50%;
+  border: 1.5px solid var(--panel);
+}
+.dot-completed { background: #2c8455 }
+.dot-pending { background: #cfa432 }
+.dot-warning { background: #b8543f }
+.dot-error { background: #b33b3b }
+.strip-scroll .film-check {
+  position: absolute; top: 4px; right: 4px; width: 15px; height: 15px; padding: 2px;
+  background: var(--ink-4); color: var(--panel-2); border-radius: 50%;
+}
+
+/* ------------------------------------------------- inspector disclosure --- */
+.inspector-fold { border-top: 1px solid var(--line); padding-top: 9px; margin-top: 2px }
+.inspector-fold > summary {
+  cursor: pointer; list-style: none; font-size: 11px; color: var(--ink-8);
+  display: flex; align-items: center; gap: 6px; padding: 3px 0;
+}
+.inspector-fold > summary::-webkit-details-marker { display: none }
+.inspector-fold > summary::before { content: "\25B8"; font-size: 9px; color: var(--ink-11) }
+.inspector-fold[open] > summary::before { content: "\25BE" }
+.inspector-fold > summary:hover { color: var(--ink-3) }
+.inspector-fold > *:not(summary) { margin-top: 7px }

@@ -94,26 +94,27 @@ export function Inspector({
         <Slider value={[overlay]} onValueChange={([value]) => onOverlay(value)} max={100} step={1} />
       </>}
 
-      {/* Panel 10: guide toggles and Reset Guides. */}
-      <label className="field-label">Guides</label>
-      <div className="guide-grid">
-        {([["grid", "Grid"], ["rulers", "Rulers"], ["snapGrid", "Snap grid"], ["snapSafe", "Snap safe"]] as [keyof Guides, string][])
-          .map(([key, label]) => <label key={key} className="setting-line compact"><span>{label}</span>
-            <Switch checked={guides[key]} onCheckedChange={(value) => onGuides({ ...guides, [key]: value })} />
-          </label>)}
-      </div>
-      <Button variant="outline" size="sm" onClick={onResetGuides}>Reset guides</Button>
-
-      {/* Panel 3: canvas background colour picker. */}
-      <label className="field-label" htmlFor="canvas-bg">Canvas background</label>
-      <div className="color-row">
-        <input id="canvas-bg" type="color" value={doc.background} onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
-        <input className="export-input" value={doc.background} aria-label="Background hex"
-          onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
-      </div>
-
       <div className="slider-label"><span>Object scale</span><strong>{objectScale(doc.box, target, asset)}%</strong></div>
       <p className="inspector-note">Actual image {Math.round((doc.box.w / 100) * doc.width)} × {Math.round((doc.box.h / 100) * doc.height)} px</p>
+
+      {/* Guides and background are set once for a batch, not per image, so they
+          collapse out of the way. <details> needs no state and no library. */}
+      <details className="inspector-fold">
+        <summary>Guides &amp; background</summary>
+        <div className="guide-grid">
+          {([["grid", "Grid"], ["rulers", "Rulers"], ["snapGrid", "Snap grid"], ["snapSafe", "Snap safe"]] as [keyof Guides, string][])
+            .map(([key, label]) => <label key={key} className="setting-line compact"><span>{label}</span>
+              <Switch checked={guides[key]} onCheckedChange={(value) => onGuides({ ...guides, [key]: value })} />
+            </label>)}
+        </div>
+        <label className="field-label" htmlFor="canvas-bg">Canvas background</label>
+        <div className="color-row">
+          <input id="canvas-bg" type="color" value={doc.background} onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
+          <input className="export-input" value={doc.background} aria-label="Background hex"
+            onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
+        </div>
+        <Button variant="outline" size="sm" onClick={onResetGuides}>Reset guides</Button>
+      </details>
 
       <button className="focus-mode-button" onClick={onFocus}><Expand /> Focus mode <kbd>Ctrl ⇧ F</kbd></button>
       <div className="engine-note"><Sparkles aria-hidden="true" /><div><strong>MINIMA Engine</strong><span>Scale-aware bicubic · linear light</span></div></div>
@@ -126,7 +127,13 @@ export function Inspector({
       </div>
       {processing && <div className="processing"><Progress value={progress} /><span>Processing {progress}%</span></div>}
       <Button onClick={onApply} disabled={processing || !scopeCount} className="apply-button">
-        {processing ? "Processing…" : `Apply to ${scopeCount} image${scopeCount === 1 ? "" : "s"}`}
+        {processing
+          ? "Processing…"
+          : scopeCount === 0
+            // An empty selection with the Selected scope is otherwise a dead
+            // end: a disabled button reading "Apply to 0 images".
+            ? "Select images to apply"
+            : `Apply to ${scopeCount} image${scopeCount === 1 ? "" : "s"}`}
       </Button>
     </div>
   </aside>;
