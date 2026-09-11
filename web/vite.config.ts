@@ -4,7 +4,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
-  base: "/project-m2/",
+  base: "/minima-resize/",
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(__dirname, ".") } },
   build: { outDir: "../docs", emptyOutDir: true },
