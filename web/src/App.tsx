@@ -18,26 +18,11 @@ import {
 } from "@/src/screens";
 import {
   backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
-  fitBox, megabytes, mergeImport, presetById, PRESETS, ratioLabel, srcRatio, statusOf,
+  megabytes, mergeImport, presetById, PRESETS, ratioLabel, statusOf,
   type Asset, type Doc, type DupPolicy, type GalleryFilter, type Preset, type Scope, type Screen,
 } from "@/src/flow";
 
-const seedAssets: Asset[] = [
-  { id: 1, name: "8809968136217_1.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 2, name: "8809968136217_2.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 3, name: "8809968136217_3.jpg", kind: "shoe", format: "jpg", src: { w: 1600, h: 1600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 4, name: "8809968136217_4.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 5, name: "8809968136217_5.png", kind: "fashion", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 6, name: "8809968136217_6.png", kind: "fashion", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false },
-  { id: 7, name: "8809968136217_7.webp", kind: "beauty", format: "webp", src: { w: 2000, h: 2000 }, processed: false, overflow: false, fixed: false, corrupt: false },
-  { id: 8, name: "8809968136217_8.png", kind: "beauty", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false },
-  { id: 9, name: "8809968136217_9.jpg", kind: "bottle", format: "jpg", src: { w: 1200, h: 1600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 10, name: "8809968136217_10.png", kind: "beauty", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: true, fixed: false, corrupt: false },
-  { id: 11, name: "8809968136217_11.png", kind: "fashion", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false },
-  { id: 12, name: "8809968136217_12.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: true },
-];
-
-const initialDoc = docFromPreset(presetById("zalando"), seedAssets[1]);
+const initialDoc = docFromPreset(presetById("zalando"));
 
 /** Undo/redo over the document snapshot only — navigation is never undoable. */
 function useHistory(initial: Doc) {
@@ -59,12 +44,12 @@ function useHistory(initial: Doc) {
 }
 
 export function MinimaWorkspace() {
-  const [assets, setAssets] = useState(seedAssets);
+  const [assets, setAssets] = useState<Asset[]>([]);
   const [presets, setPresets] = useState<Preset[]>(PRESETS);
-  const [screen, setScreen] = useState<Screen>("gallery");
+  const [screen, setScreen] = useState<Screen>("import");
   const [imageScreen, setImageScreen] = useState<"gallery" | "editor">("gallery");
-  const [selected, setSelected] = useState<number[]>([2, 3, 4]);
-  const [activeId, setActiveId] = useState(2);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [activeId, setActiveId] = useState(0);
   const [filter, setFilter] = useState<GalleryFilter>(emptyFilter);
   const [scope, setScope] = useState<Scope>("selected");
   const [policy, setPolicy] = useState<DupPolicy>("skip");
@@ -96,6 +81,7 @@ export function MinimaWorkspace() {
 
   const { doc, setDoc, undo, redo, canUndo, canRedo } = useHistory(initialDoc);
   const active = assets.find((asset) => asset.id === activeId) ?? assets[0];
+  const hasActive = Boolean(active);
   const target = useMemo(() => docTarget(doc, presets), [doc, presets]);
 
   const counts = useMemo(() => countByStatus(assets, target), [assets, target]);
@@ -118,11 +104,14 @@ export function MinimaWorkspace() {
     window.setTimeout(() => setSaving(false), 700);
   }, []);
 
+  /**
+   * The placeholder frame belongs to the batch, not to one image: every file in
+   * the queue is laid out in the same frame, so switching images leaves it be.
+   */
   const openEditor = useCallback((asset: Asset) => {
     setActiveId(asset.id);
-    setDoc((current) => ({ ...current, box: fitBox(current.fit, srcRatio(asset), current.width / current.height, current.safeX, current.safeY) }));
     goto("editor");
-  }, [goto, setDoc]);
+  }, [goto]);
 
   const chooseAsset = useCallback((asset: Asset, multi = false, range = false) => {
     setActiveId(asset.id);
@@ -138,9 +127,9 @@ export function MinimaWorkspace() {
   }, [visible]);
 
   const applyPreset = useCallback((id: string) => {
-    setDoc(docFromPreset(presetById(id, presets), active));
+    setDoc(docFromPreset(presetById(id, presets)));
     touch(`Preset ${presetById(id, presets).label} loaded`);
-  }, [active, presets, setDoc, touch]);
+  }, [presets, setDoc, touch]);
 
   /** The resize step commits: scoped assets become processed, statuses recompute. */
   const runApply = useCallback(() => {
@@ -184,9 +173,12 @@ export function MinimaWorkspace() {
     const picked = toSources(Array.from(incoming ?? []), Date.now());
     if (!picked.length) return;
     setSources(picked);
-    const merged = mergeImport(assets, picked.map((source) => ({ name: source.name })), policy);
+    const merged = mergeImport(assets, picked.map((source) => ({
+      name: source.name, file: source.file, url: URL.createObjectURL(source.file),
+    })), policy);
     setAssets(merged.assets);
-    setSelected([]);
+    setSelected(merged.assets.filter((asset) => asset.url).map((asset) => asset.id));
+    setActiveId(merged.assets[0]?.id ?? 0);
     setFork(summarise(picked));
     touch(`Imported ${merged.added}${merged.skipped ? `, skipped ${merged.skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
   }, [assets, policy, touch]);
@@ -198,6 +190,8 @@ export function MinimaWorkspace() {
       : assets.filter((asset) => selected.includes(asset.id));
     const ids = new Set(doomed.map((asset) => asset.id));
     const left = assets.filter((asset) => !ids.has(asset.id));
+    // Object URLs pin the file in memory until they are revoked.
+    for (const asset of doomed) if (asset.url) URL.revokeObjectURL(asset.url);
     setAssets(left);
     setSelected([]);
     setRemoveIntent(null);
@@ -220,9 +214,9 @@ export function MinimaWorkspace() {
 
   const deletePreset = useCallback((preset: Preset) => {
     setPresets((current) => current.filter((row) => row.id !== preset.id));
-    if (doc.presetId === preset.id) setDoc(docFromPreset(PRESETS[0], active));
+    if (doc.presetId === preset.id) setDoc(docFromPreset(PRESETS[0]));
     touch(`Deleted ${preset.label}`);
-  }, [active, doc.presetId, setDoc, touch]);
+  }, [doc.presetId, setDoc, touch]);
 
   /* The export run steps one file at a time so Pause actually holds. */
   useEffect(() => {
@@ -266,7 +260,7 @@ export function MinimaWorkspace() {
       if (typing) return;
       if (mod && event.key.toLowerCase() === "a" && screen === "gallery") { event.preventDefault(); setSelected(visible.map((asset) => asset.id)); return; }
       if (mod && event.key === "Backspace") { event.preventDefault(); askRemoval(false); return; }
-      if (event.key === "Enter" && screen === "gallery") { event.preventDefault(); openEditor(active); return; }
+      if (event.key === "Enter" && screen === "gallery" && active) { event.preventDefault(); openEditor(active); return; }
       if (event.code === "Space") { event.preventDefault(); if (screen !== "editor") goto("editor"); setCompare(true); }
     };
     const onKeyUp = (event: KeyboardEvent) => { if (event.code === "Space") setCompare(false); };
@@ -282,7 +276,7 @@ export function MinimaWorkspace() {
     });
   }, [assets]);
 
-  if (focus) return <main className="focus-workspace">
+  if (focus && hasActive) return <main className="focus-workspace">
     <button className="focus-exit" onClick={() => setFocus(false)}>Press Ctrl+Shift+F to exit Focus Mode</button>
     <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
     <div className="focus-canvas" style={{ transform: `scale(${zoom / 100})` }}><ProductPlaceholder kind={active.kind} large /></div>
@@ -298,7 +292,7 @@ export function MinimaWorkspace() {
   const back = backTarget(screen, assets.length > 0);
   const onImages = ["gallery", "editor", "review"].includes(screen);
   const zoomEnabled = screen === "editor" || screen === "gallery";
-  const title = screen === "editor" ? active.name
+  const title = screen === "editor" && hasActive ? active.name
     : screen === "settings" ? "Settings"
     : screen === "presets" ? "Presets Manager"
     : screen === "review" ? "Error Diagnostics"
@@ -364,14 +358,14 @@ export function MinimaWorkspace() {
       {screen === "gallery" && <Gallery assets={visible} total={assets.length} selected={selected} counts={counts} filter={filter} zoom={zoom}
         needsAttention={needsAttention} target={target} onFilter={setFilter} onChoose={chooseAsset} onOpen={openEditor}
         onReview={() => goto("review")} onRemove={askRemoval} />}
-      {screen === "editor" && <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom}
+      {screen === "editor" && hasActive && <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onBox={(box) => setDoc((current) => ({ ...current, box }))} onSplit={setSplitAt} onChoose={openEditor}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
 
-      {inspectorOpen && !["import", "presets", "settings", "batch"].includes(screen) && (
+      {inspectorOpen && hasActive && !["import", "presets", "settings", "batch"].includes(screen) && (
         <Inspector doc={doc} target={target} asset={active} presets={presets} guides={guides} scope={scope}
             scopeCount={scoped.length} selectedCount={selected.length} totalCount={assets.length}
             compare={compare} overlay={overlay} processing={processing} progress={progress}
@@ -395,7 +389,7 @@ export function MinimaWorkspace() {
         <Button variant="secondary" size="sm" disabled={processing || !scoped.length} onClick={runApply}>Apply preset</Button>
         <Button size="sm" disabled={!exportQueue.length} onClick={() => setExportOpen(true)}><Download /> Export</Button>
       </div>}
-      <span>{onImages && assets.length
+      <span>{onImages && hasActive
         ? `${active.src.w} × ${active.src.h} px · ${ratioLabel(doc.width, doc.height)} · ${active.format.toUpperCase()} · ${megabytes(active).toFixed(1)} MB`
         : ""}</span>
     </footer>
@@ -409,7 +403,7 @@ export function MinimaWorkspace() {
     <PresetDialog draft={presetDraft} presets={presets} onCancel={() => setPresetDraft(null)} onSave={savePreset} />
     <ImportForkDialog summary={fork}
       onBatch={() => { setFork(null); goto("batch"); }}
-      onEditor={() => { setFork(null); goto("gallery"); }} />
+      onEditor={() => { setFork(null); if (assets[0]) openEditor(assets[0]); else goto("gallery"); }} />
     <CloudDialog open={cloudOpen} onOpenChange={setCloudOpen} onImport={(names) => { setCloudOpen(false); importNames(names); }} />
 
     <input ref={filesInput} type="file" accept="image/*" multiple className="sr-only" onChange={(event) => importFiles(event.target.files)} />
