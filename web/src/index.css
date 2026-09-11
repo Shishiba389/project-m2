@@ -25,10 +25,10 @@
 /* Direct manipulation and 3×3 alignment controls from the MINIMA workspace guide. */
 .alignment-grid button span{width:5px;height:5px;border-radius:50%;background:currentColor}
 .portrait-canvas{overflow:hidden}
-.editable-object{position:absolute;inset:5%;display:flex;align-items:center;justify-content:center;cursor:move;touch-action:none}
-.editable-object:focus-visible{outline:2px solid var(--tile-3);outline-offset:3px}
-.editable-object .selection-bounds{inset:0}
-.editable-object .product-large{height:60%;width:72%}
+
+
+
+
 
 /* Pixel geometry taken from the 1024×559 MINIMA reference frames. */
 .minima-app{min-height:100dvh;grid-template:34px minmax(0,1fr) 34px/64px minmax(0,1fr)}
@@ -68,8 +68,8 @@
 .editor-stage .compare-labels{position:absolute;top:4px;left:0;right:0;margin:0;z-index:2}
 .original-object{position:absolute;inset:14%;display:flex;align-items:center;justify-content:center}
 .original-object .product-large{width:100%;height:100%}
-.editable-object{inset:auto}
-.editable-object .product-large{width:100%;height:100%}
+
+
 
 /* Inspector additions: object scale readout and the apply-scope radio group. */
 .inspector-note{margin:0;color:#8a8a8a;font-size:10px}
@@ -680,6 +680,12 @@ body { background: var(--app); display: grid; place-items: center; }
 }
 @media (max-width: 620px) { .fork-options { grid-template-columns: 1fr } }
 
+/* The pixel-replica rule gave .filmstrip button a 236px min-width, display:grid
+   and a "54px 1fr" template. Patching each descendant one property at a time
+   leaked three separate bugs, so the legacy rule is neutralised once here and
+   the strip's own rules build up from nothing. */
+.filmstrip button { min-width: 0; display: block; grid-template: none; padding: 0; text-align: center }
+
 /* ------------------------------------------------------- editor filmstrip --
    236px cards with clipped captions and a fat scrollbar, for a strip meant to
    scan a whole batch. Square thumbs read faster, the status is a dot whose text
@@ -688,8 +694,9 @@ body { background: var(--app); display: grid; place-items: center; }
 .filmstrip { display: flex; align-items: center; gap: 10px; height: 96px; padding: 8px 10px }
 .strip-nav { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; color: var(--ink-9) }
 .strip-nav button {
-  width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--line-5);
-  border-radius: 6px; background: var(--tile-4); color: inherit;
+  /* .filmstrip button still carries min-width:222px from the pixel replica. */
+  width: 26px; min-width: 0; height: 26px; display: grid; place-items: center;
+  border: 1px solid var(--line-5); border-radius: 6px; background: var(--tile-4); color: inherit;
 }
 .strip-nav button:hover { border-color: var(--ink-9); color: var(--ink-3) }
 .strip-nav button svg { width: 14px; height: 14px }
@@ -739,3 +746,86 @@ body { background: var(--app); display: grid; place-items: center; }
 .inspector-fold[open] > summary::before { content: "\25BE" }
 .inspector-fold > summary:hover { color: var(--ink-3) }
 .inspector-fold > *:not(summary) { margin-top: 7px }
+
+/* ============================================================================
+   The placeholder frame.
+
+   The old model sized an object box from the image's own ratio, so it could
+   only ever be dragged around and had four corner handles. The frame is now
+   the user's: eight handles, numeric margins, and the image fills it. Every
+   file in the editor queue is laid out in the same frame.
+   ========================================================================== */
+
+/* Real files, wherever a surface has one. */
+.asset-image {
+  width: 100%; height: 100%; display: block; object-fit: cover;
+  background: var(--tile-5);
+}
+.asset-card .asset-image { aspect-ratio: 1 / 1 }
+.strip-scroll .asset-image { width: 100%; height: 100% }
+.export-list .asset-image, .export-stream .asset-image {
+  width: 26px; min-width: 26px; height: 22px; border-radius: 4px;
+}
+.export-list .asset-image { width: 40px; min-width: 40px; height: 34px }
+.review-card .asset-image { aspect-ratio: 4 / 3 }
+
+.frame {
+  position: absolute; box-sizing: border-box; cursor: move; touch-action: none;
+}
+.frame .asset-image {
+  width: 100%; height: 100%; transform: var(--flip, none);
+  /* Fit leaves margins inside the frame; those must show the canvas colour,
+     because that is what the export paints, not a panel grey. */
+  background: transparent;
+}
+.frame .product-placeholder { width: 100%; height: 100%; min-height: 0 }
+.frame:focus-visible { outline: none }
+.frame:focus-visible .frame-outline { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--frame-line) }
+
+/* A violet selection reads as "chosen" against the light artboard in either
+   theme, and matches the design system's primary. */
+.frame { --frame-line: #7C3AED }
+.frame-outline {
+  position: absolute; inset: 0; pointer-events: none;
+  border: 1.5px solid var(--frame-line);
+}
+
+.frame-handle {
+  position: absolute; z-index: 2; background: #fff;
+  border: 1.5px solid var(--frame-line); touch-action: none;
+}
+/* Corners: round, and they move two edges. */
+.handle-nw, .handle-ne, .handle-se, .handle-sw {
+  width: 11px; height: 11px; border-radius: 50%;
+}
+.handle-nw { left: -6px; top: -6px; cursor: nwse-resize }
+.handle-ne { right: -6px; top: -6px; cursor: nesw-resize }
+.handle-se { right: -6px; bottom: -6px; cursor: nwse-resize }
+.handle-sw { left: -6px; bottom: -6px; cursor: nesw-resize }
+/* Edges: pills, and they move one edge. */
+.handle-n, .handle-s { left: 50%; width: 22px; height: 8px; margin-left: -11px; border-radius: 99px; cursor: ns-resize }
+.handle-e, .handle-w { top: 50%; width: 8px; height: 22px; margin-top: -11px; border-radius: 99px; cursor: ew-resize }
+.handle-n { top: -5px }
+.handle-s { bottom: -5px }
+.handle-e { right: -5px }
+.handle-w { left: -5px }
+@media (pointer: coarse) {
+  /* Fingers need a bigger target than the visual handle. */
+  .frame-handle::after { content: ""; position: absolute; inset: -12px }
+}
+
+/* Frame controls in the inspector. */
+.frame-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px }
+.frame-actions button {
+  height: 28px; border: 1px solid var(--line-6); border-radius: 6px;
+  background: var(--tile-6); color: var(--ink-8); font-size: 11px;
+}
+.frame-actions button:hover { border-color: var(--ink-9); color: var(--ink-3) }
+
+.margin-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px }
+.margin-grid label { display: grid; gap: 3px }
+.margin-grid span { font-size: 10px; color: var(--ink-11) }
+.margin-grid input {
+  width: 100%; padding: 6px 7px; font-size: 12px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line-6); border-radius: 6px; background: var(--control-2); color: var(--ink);
+}
