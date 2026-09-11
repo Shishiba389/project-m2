@@ -1,7 +1,10 @@
 # MINIMA Resize — Workflow & Button Wiring
 
-Single source of truth for navigation. Implemented in `src/flow.ts` (logic) and
-`src/App.tsx` (surfaces). Any button not listed here does not exist.
+Single source of truth for navigation. Implemented in `src/flow.ts` (logic),
+`src/App.tsx` (shell), `src/screens.tsx`, `src/inspector.tsx`, `src/dialogs.tsx`.
+
+Every control listed here does something. Panel numbers refer to the reference
+frames in `FLOW/`.
 
 ## 1. The one primary path
 
@@ -9,8 +12,8 @@ Single source of truth for navigation. Implemented in `src/flow.ts` (logic) and
 Import → Select → Resize / Position → Apply preset → Review → Export
 ```
 
-Every screen below exists only to serve one step of that path. Nothing in the
-app is reachable by two different mental models.
+Every screen exists to serve one step of that path. Nothing is reachable by two
+different mental models.
 
 ## 2. State model
 
@@ -20,27 +23,27 @@ There is exactly **one** navigation state, `screen`. The old dual
 | `screen` | Step served | Entry | Exit |
 |---|---|---|---|
 | `import` | Import | rail **Import**; automatic when `assets.length === 0` | any import adds assets → `gallery` |
-| `gallery` | Select, Review batch | rail **Images**; Back from editor/review; view switch **Gallery** | — (the hub) |
-| `editor` | Resize / Position | double-click a card; **Enter** on a card; view switch **Editor** | Back → `gallery` |
+| `gallery` | Select, batch manage | rail **Images**; Back from editor/review; view switch **Gallery** | — (the hub) |
+| `editor` | Resize / Position | double-click a card; **Enter**; view switch **Editor** | Back → `gallery` |
 | `review` | Review | **Review n** in the gallery toolbar; needs-attention count in the status bar | Back → `gallery` |
 | `presets` | Apply preset | rail **Presets** | Back → `gallery` / `import` |
 | `settings` | — | rail **Settings** | Back → `gallery` / `import` |
 
-Back is one rule for all screens: `backTarget()` in `flow.ts`. It goes up one
-level and is hidden on `import` (the root).
+Back is one rule for all screens: `backTarget()`. It goes up one level and is
+hidden on `import` (the root).
 
-**Overlays** stack over any screen and never change `screen`:
-`exportOpen`, `exporting`, `shortcutsOpen`, `removeOpen`.
-Import has no overlay — Add files / Add folders / duplicate policy sit inline on
-the `import` screen, as in the reference frame.
+**Overlays** stack over any screen and never change `screen`: `exportOpen`,
+`run` (export progress), `shortcutsOpen`, `removeIntent`, `presetDraft`,
+`cloudOpen`. Import's own options are inline on the `import` screen, per panel 4.
 
 **Modifiers** change chrome, not location:
 
 | Modifier | Effect | Toggle |
 |---|---|---|
-| `compare` | Editor canvas splits Original \| Resized | hold **Space**, or status-bar **Compare** (sticky) |
-| `focus` | Hides rail, inspector, status bar; editor only | **Ctrl+Shift+F**, **Esc** to exit |
-| `railOpen` / `inspectorOpen` | Collapses a panel | top-bar panel toggles |
+| `compare` | Editor canvas compares original vs resized | hold **Space**, or status-bar **Compare** (sticky) |
+| `compareView` | `before` / `split` / `after` | top-bar segmented control, visible only while comparing (panel 9) |
+| `focus` | Hides rail, inspector, status bar | **Ctrl+Shift+F**, **Esc** to exit |
+| `railOpen` / `inspectorOpen` | Collapses a panel | top-bar toggles; inspector also has its own **✕** |
 
 Entering `compare` or `focus` from a non-editor screen switches to `editor`
 first, so a modifier is never active on a screen that cannot show it.
@@ -53,76 +56,112 @@ first, so a modifier is never active on a screen that cannot show it.
 | Import | `screen = import` | never |
 | Images | `screen = lastImageScreen` (`gallery` or `editor`) | no assets |
 | Presets | `screen = presets` | never |
-| Export | opens `exportOpen`, screen unchanged | nothing processed yet |
+| Export | opens the export overlay, screen unchanged | nothing processed yet |
 | Settings | `screen = settings` | never |
 
-Export appears **once**, in the rail. The status bar's Export is the same
-overlay, not a second flow.
+Export appears once in the rail; the status bar's Export opens the same overlay.
 
 ### Top bar
 | Control | Wiring |
 |---|---|
 | Panel toggle | `railOpen` |
 | Back | `backTarget(screen)`; hidden on `import` |
-| Undo / Redo | history of the *document* snapshot (preset, dimensions, fit, align, safe area, object box) — never of navigation |
+| Undo / Redo | history of the *document* snapshot (preset, dimensions, fit, align, safe area, background, flip, object box) — never of navigation. `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Document name | active file on `editor`; screen title elsewhere |
-| Zoom − / % / + | `editor`: canvas zoom. `gallery`: thumbnail density (§24). Disabled elsewhere |
+| Before / Split / After | `compareView`; only rendered while comparing |
+| Zoom − / % / + | `editor`: canvas scale. `gallery`: thumbnail density (§24). Disabled elsewhere |
 | Inspector toggle | `inspectorOpen` |
-| Help | `shortcutsOpen` |
+| Help | shortcuts overlay (panel 6) |
 
 ### Gallery
 | Control | Wiring |
 |---|---|
-| Filter tabs All/Completed/Pending/Warning/Error | filters the grid; counts derived by `countByStatus()` |
+| Filter tabs All/Completed/Pending/Warning/Error | `filter.status`; counts from `countByStatus()` |
+| Funnel menu (panel 8) | format, resolution and error type as checkboxes; sort by name/date/size as radios; **Clear n filters**. All of it runs through `filterAssets()`; an unticked facet means no restriction |
 | Search | filename substring |
-| Sort | name / date / size |
 | Review *n* | `screen = review`; hidden when nothing needs attention |
-| Remove | `removeOpen` → Remove selected / unselected → confirm |
 | Card click / Ctrl-click / Shift-click / Ctrl+A | select / toggle / range / all |
 | Card double-click, Enter | `screen = editor`, that asset active |
+| Card right-click (panel 1) | Open in editor · Remove selected (*n*) · Remove unselected (*n*) · Remove (move to Trash) → confirmation overlay. `Ctrl+Backspace` opens the same confirmation |
+
+Cards show filename, `w × h px · size`, and the derived status badge.
+
+### Editor canvas
+| Control | Wiring |
+|---|---|
+| Drag / arrow keys | moves the object box; Shift = ×10 |
+| Snapping | `snapBox()` honours the two snap switches: safe-area edges plus centre lines, and the thirds grid. Both off means free movement |
+| Rulers, grid overlay, grid button (panel 10) | `guides.rulers` / `guides.grid` |
+| Split handle (panel 9) | drag or arrow keys move `splitAt`; the divider clips the resized canvas over the original |
+| Filmstrip | switches the active asset, keeps the selection |
 
 ### Inspector — the resize step
 | Control | Wiring |
 |---|---|
 | Preset | applies the whole preset row: dimensions, safe area, fit, align, background |
 | Width × Height | free typing; aspect lock re-derives the other from the ratio captured when the lock engaged |
-| Aspect ratio lock | captures the current ratio |
 | Fit / Fill / Stretch | re-sizes the object box via `fitBox()` |
 | 3×3 alignment | places the object via `anchor()` inside the safe area |
-| Safe area Top / Left | live overlay on the canvas; re-runs fit/align |
-| Scope: Current / Selected *n* / All *n* | sets which assets Apply writes to (§13) |
-| **Apply to *n* images** | marks the scope processed → statuses recompute → Export unlocks. Disabled while processing |
+| Flip H / Flip V (panel 3) | `doc.flipH` / `doc.flipV`, applied as a canvas transform |
+| Safe area sliders | live overlay, re-runs fit and align |
+| Overlay opacity (panel 9) | strength of the original in the split view; only shown while comparing |
+| Show grid / rulers, Snap to grid / safe area, Reset guides (panel 10) | `guides`; Reset restores the defaults and re-applies the preset |
+| Canvas background (panel 3) | colour picker plus hex field, both writing `doc.background` |
+| Object scale | read-out from `objectScale()`, with the resulting pixel size |
+| Scope: Current / Selected *n* / All *n* | which assets Apply writes to (§13) |
+| **Apply to *n* images** | marks the scope processed, records safe-area overflow for Fill/Stretch → statuses recompute → Export unlocks |
+| ↺ / ✕ in the heading | Reset guides · close the inspector |
 
 The Apply label always names its scope. There is no bare "Apply".
 
-### Editor canvas
-Drag or arrow keys move the object (Shift = ×10), snapping to the safe-area
-edges and the centre lines. Filmstrip switches the active asset and keeps the
-selection intact.
+### Review (panel 2)
+Derived view of everything `statusOf()` reports as Warning or Error. Each card
+opens a diagnostic popover that names the reason from `warningReason()` —
+aspect mismatch, with target vs current ratio, or safe-area overflow — and
+carries its own **Auto-fix (crop / pad)** plus **Open in editor**. The heading
+has **Re-run preset** and a batch **Auto-fix scaling (*n*)**.
 
-### Review
-Derived view of everything `statusOf()` reports as Warning or Error.
-**Auto-fix (crop/pad)** sets `fixed` on the warned assets, which clears the
-warning everywhere at once. Corrupt files stay Error — auto-fix cannot reach
-them. They stay in the export queue and fail there, which is what fills the
-export error log, so Review is the cheap place to deal with them first.
+Corrupt files stay Error; auto-fix cannot reach them. They stay in the export
+queue and fail there, which is what fills the export error log — so Review is
+the cheap place to deal with them first.
+
+### Presets manager (panel 7)
+The category list filters the preset rows. Row right-click gives Apply · Edit ·
+Duplicate · Share · Delete; Edit and Delete are disabled for built-in rows.
+**Add new custom preset** and Duplicate both open the preset editor (name,
+dimensions, safe area, background), which writes into app state — so a new
+preset appears immediately in the inspector dropdown and in Settings.
 
 ### Export
-Rail Export or status-bar Export → overlay (format, quality, colour profile,
-naming, output folder, estimated size) → **Export *n* images** → progress
-overlay with Pause / Cancel and a per-file error log.
+Rail or status-bar Export → options overlay (format, quality — disabled for
+PNG, colour profile, keep-filename, suffix, output folder). The file list
+previews the real output names via `outputName()`, and the size estimate
+follows the chosen format and quality.
+
+**Export *n* images** → progress overlay (panel 5): **Pause export** /
+**Cancel export**, a streaming list of written files, and the failures behind
+**VIEW ERROR LOG**.
+
+### Settings (panel 12)
+Three panes: General · section list · section detail. General's default preset,
+auto-crop and theme are real state; **theme** writes `data-theme` on the
+document root, and the stylesheet's chrome tokens carry both palettes, so Light
+and Dark actually re-skin the app. The detail pane renders the selected
+section — GPU acceleration (hardware switch, GPU priority, thread count, RAM
+allocation), keyboard shortcuts, or default export paths.
 
 ## 4. Derived, never stored
 
-These are computed so two surfaces cannot disagree:
+Computed so two surfaces cannot disagree:
 
-- **Status** — `statusOf(asset, preset)`: corrupt → Error, unprocessed →
-  Pending, aspect mismatch vs the active preset → Warning, else Completed.
-- **Filter counts** — `countByStatus()`.
+- **Status** — `statusOf()`: corrupt → Error, unprocessed → Pending,
+  `warningReason()` → Warning, else Completed.
+- **Warning reason** — `warningReason()`: aspect mismatch outranks safe-area
+  overflow; `fixed` clears both.
+- **Filter counts** — `countByStatus()`. **Gallery rows** — `filterAssets()`.
 - **Apply / Export scope** — `scopeAssets()`.
 - **Object box** — `fitBox()` / `anchor()` / `snapBox()`, in percent of the
   canvas so zoom never changes the result.
-- **Back target** — `backTarget()`.
+- **Output filenames** — `outputName()`. **Back target** — `backTarget()`.
 
-Checks for all of the above live in `demo()` at the bottom of `flow.ts`:
-`npx tsx src/flow.ts`.
+Checks live in `demo()` at the bottom of `flow.ts`: `npx tsx src/flow.ts`.
