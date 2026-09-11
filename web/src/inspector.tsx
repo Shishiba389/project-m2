@@ -95,18 +95,13 @@ export function Inspector({
       </>}
 
       {/* Panel 10: guide toggles and Reset Guides. */}
-      <label className="setting-line compact"><span>Show grid</span>
-        <Switch checked={guides.grid} onCheckedChange={(value) => onGuides({ ...guides, grid: value })} />
-      </label>
-      <label className="setting-line compact"><span>Show rulers</span>
-        <Switch checked={guides.rulers} onCheckedChange={(value) => onGuides({ ...guides, rulers: value })} />
-      </label>
-      <label className="setting-line compact"><span>Snap to grid</span>
-        <Switch checked={guides.snapGrid} onCheckedChange={(value) => onGuides({ ...guides, snapGrid: value })} />
-      </label>
-      <label className="setting-line compact"><span>Snap to safe area</span>
-        <Switch checked={guides.snapSafe} onCheckedChange={(value) => onGuides({ ...guides, snapSafe: value })} />
-      </label>
+      <label className="field-label">Guides</label>
+      <div className="guide-grid">
+        {([["grid", "Grid"], ["rulers", "Rulers"], ["snapGrid", "Snap grid"], ["snapSafe", "Snap safe"]] as [keyof Guides, string][])
+          .map(([key, label]) => <label key={key} className="setting-line compact"><span>{label}</span>
+            <Switch checked={guides[key]} onCheckedChange={(value) => onGuides({ ...guides, [key]: value })} />
+          </label>)}
+      </div>
       <Button variant="outline" size="sm" onClick={onResetGuides}>Reset guides</Button>
 
       {/* Panel 3: canvas background colour picker. */}
@@ -120,16 +115,15 @@ export function Inspector({
       <div className="slider-label"><span>Object scale</span><strong>{objectScale(doc.box, target, asset)}%</strong></div>
       <p className="inspector-note">Actual image {Math.round((doc.box.w / 100) * doc.width)} × {Math.round((doc.box.h / 100) * doc.height)} px</p>
 
+      <button className="focus-mode-button" onClick={onFocus}><Expand /> Focus mode <kbd>Ctrl ⇧ F</kbd></button>
+      <div className="engine-note"><Sparkles aria-hidden="true" /><div><strong>MINIMA Engine</strong><span>Scale-aware bicubic · linear light</span></div></div>
+    </div>
+    <div className="inspector-footer">
       <label className="field-label">Apply resize to</label>
       <div className="scope-list" role="radiogroup" aria-label="Apply resize to">
         {([["current", "Current image"], ["selected", `Selected images (${selectedCount})`], ["all", `All images (${totalCount})`]] as [Scope, string][]).map(([value, label]) =>
           <button key={value} role="radio" aria-checked={scope === value} className={scope === value ? "active" : ""} onClick={() => onScope(value)}><span />{label}</button>)}
       </div>
-
-      <button className="focus-mode-button" onClick={onFocus}><Expand /> Focus mode <kbd>Ctrl ⇧ F</kbd></button>
-      <div className="engine-note"><Sparkles aria-hidden="true" /><div><strong>MINIMA Engine</strong><span>Scale-aware bicubic · linear light</span></div></div>
-    </div>
-    <div className="inspector-footer">
       {processing && <div className="processing"><Progress value={progress} /><span>Processing {progress}%</span></div>}
       <Button onClick={onApply} disabled={processing || !scopeCount} className="apply-button">
         {processing ? "Processing…" : `Apply to ${scopeCount} image${scopeCount === 1 ? "" : "s"}`}

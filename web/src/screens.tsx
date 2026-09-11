@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import {
-  Check, ChevronRight, Copy, FileImage, FolderOpen, Layers3, ListFilter, Package, Pencil,
-  Plus, Search, Share2, Sparkles, Trash2, TriangleAlert, Upload, Zap,
+  Check, Cloud, Copy, FileImage, FolderOpen, Grid2X2, Layers3, ListFilter, Package, Pencil,
+  Plus, Search, Share2, Trash2, TriangleAlert, Upload, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -11,9 +11,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
-import { SHORTCUTS } from "@/src/dialogs";
 import {
   megabytes, presetById, ratioLabel, resolutionOf, snapBox, statusOf, warningReason,
   type Asset, type Box, type Doc, type DupPolicy, type Format, type GalleryFilter,
@@ -25,18 +22,7 @@ export const defaultGuides: Guides = { grid: true, rulers: true, snapGrid: true,
 
 export type CompareView = "split" | "before" | "after";
 
-export type AppSettings = {
-  defaultPresetId: string;
-  autoCrop: boolean;
-  theme: "light" | "dark" | "system";
-  hardware: boolean;
-  gpuPriority: "primary" | "high" | "low";
-  threads: number;
-  ram: number;
-};
-export const defaultSettings: AppSettings = {
-  defaultPresetId: "zalando", autoCrop: false, theme: "dark", hardware: true, gpuPriority: "primary", threads: 16, ram: 32,
-};
+export type Theme = "light" | "dark" | "system";
 
 const STATUS_FILTERS: ("All" | Status)[] = ["All", "Completed", "Pending", "Warning", "Error"];
 const FORMATS: Format[] = ["png", "jpg", "webp", "tiff"];
@@ -67,36 +53,48 @@ export function ImportScreen({ policy, onPolicy, onFiles, onFolders, onCloud, on
   onFiles: () => void; onFolders: () => void; onCloud: () => void; onDrop: (files: FileList) => void;
 }) {
   const [dragging, setDragging] = useState(false);
-  return <div className="empty-workspace"
+  return <div className="import-pane"
     onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
     onDragLeave={() => setDragging(false)}
     onDrop={(event) => { event.preventDefault(); setDragging(false); onDrop(event.dataTransfer.files); }}>
-    <button className={`drop-zone ${dragging ? "dragging" : ""}`} onClick={onFiles}>
-      <span className="drop-icon"><FolderOpen aria-hidden="true" /><Upload aria-hidden="true" /></span>
-      <span>Drop images here&nbsp; or</span>
-      <strong>Browse (PNG, JPG, WEBP, TIFF)</strong>
-    </button>
-    <div className="import-actions">
-      <Button size="sm" onClick={onFiles}>Add files…</Button>
-      <Button size="sm" onClick={onFolders}>Add folders…</Button>
-      <Button size="sm" onClick={onCloud}>Import from cloud…</Button>
-    </div>
-    <label className="policy-row">
-      <span>Handling existing files</span>
-      <Select value={policy} onValueChange={(value) => onPolicy(value as DupPolicy)}>
-        <SelectTrigger><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="skip">Skip (default)</SelectItem>
-          <SelectItem value="overwrite">Overwrite</SelectItem>
-          <SelectItem value="rename">Rename</SelectItem>
-        </SelectContent>
-      </Select>
-    </label>
-  </div>;
-}
+    <div className="import-card">
+      <header className="import-intro">
+        <h1>Start a resize batch</h1>
+        <p>Drop a folder of product shots in. Everything lands in the Gallery, where a
+          preset applies one set of rules to the whole batch.</p>
+      </header>
 
-export function IdleInspector() {
-  return <aside className="idle-inspector" aria-label="Resize inspector"><Sparkles aria-hidden="true" fill="currentColor" /></aside>;
+      <button className={`drop-zone ${dragging ? "dragging" : ""}`} onClick={onFiles}>
+        <span className="drop-icon"><FolderOpen aria-hidden="true" /><Upload aria-hidden="true" /></span>
+        <strong>Drop images here</strong>
+        <span>or browse your computer</span>
+        <span className="drop-formats">PNG · JPG · WEBP · TIFF</span>
+      </button>
+
+      <div className="import-actions">
+        <Button onClick={onFiles}><Upload /> Add files…</Button>
+        <Button variant="secondary" onClick={onFolders}><FolderOpen /> Add folders…</Button>
+        <Button variant="secondary" onClick={onCloud}><Cloud /> Import from cloud…</Button>
+      </div>
+
+      <label className="policy-row">
+        <span>If a filename already exists</span>
+        <Select value={policy} onValueChange={(value) => onPolicy(value as DupPolicy)}>
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="skip">Skip (default)</SelectItem>
+            <SelectItem value="overwrite">Overwrite</SelectItem>
+            <SelectItem value="rename">Rename</SelectItem>
+          </SelectContent>
+        </Select>
+      </label>
+
+      <ol className="import-steps">
+        {[["Select", "in the Gallery"], ["Resize", "with a preset"], ["Review", "what needs attention"], ["Export", "the batch"]]
+          .map(([step, hint], index) => <li key={step}><span>{index + 1}</span><strong>{step}</strong><em>{hint}</em></li>)}
+      </ol>
+    </div>
+  </div>;
 }
 
 /* ------------------------------------------------------------------- gallery */
@@ -109,8 +107,9 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
   onOpen: (asset: Asset) => void; onReview: () => void;
   onRemove: (keepSelected: boolean) => void;
 }) {
-  // The top-bar zoom drives grid density here (Engine spec §24).
-  const columnWidth = Math.round(112 * (zoom / 100));
+  // The top-bar zoom drives grid density here (Engine spec §24). The 112px base
+  // came from a downscaled reference screenshot and truncated every filename.
+  const columnWidth = Math.round(168 * (zoom / 100));
   const facets = filter.formats.length + filter.resolutions.length + filter.errorTypes.length;
   const toggle = <T,>(list: T[], value: T) => list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 
@@ -261,7 +260,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
       {guides.rulers && !compare && <>
         <div className="ruler ruler-top" aria-hidden="true" />
         <div className="ruler ruler-left" aria-hidden="true" />
-        <button className={`grid-toggle ${guides.grid ? "active" : ""}`} aria-pressed={guides.grid} aria-label="Toggle grid and guides" onClick={onToggleGrid}>#</button>
+        <button className={`grid-toggle ${guides.grid ? "active" : ""}`} aria-pressed={guides.grid} aria-label="Toggle grid and guides" onClick={onToggleGrid}><Grid2X2 /></button>
       </>}
 
       {compare
@@ -414,66 +413,32 @@ export function PresetManager({ presets, activeId, onApply, onCreate, onEdit, on
 
 /* ------------------------------------------------------------------ settings */
 
-type SettingsSection = "gpu" | "shortcuts" | "paths";
-
-/** Panel 12: General on the left, a section list in the middle, its detail on the right. */
-export function SettingsScreen({ presets, settings, onSettings }: {
-  presets: Preset[]; settings: AppSettings; onSettings: (next: AppSettings) => void;
-}) {
-  const [section, setSection] = useState<SettingsSection>("gpu");
-  const sections: [SettingsSection, string][] = [["gpu", "GPU acceleration & performance"], ["shortcuts", "Keyboard shortcuts"], ["paths", "Default export paths"]];
-
+/**
+ * This is a web app, so the GPU, thread, RAM and export-path panels the native
+ * mockups showed have nothing to control — they were switches wired to state
+ * nobody read. Theme is the one preference the browser build actually owns.
+ */
+export function SettingsScreen({ theme, onTheme }: { theme: Theme; onTheme: (value: Theme) => void }) {
+  const options: [Theme, string, string][] = [
+    ["light", "Light", "Bright chrome for a lit room"],
+    ["dark", "Dark", "Default, keeps focus on the artboard"],
+    ["system", "System", "Follows your operating system"],
+  ];
   return <div className="full-pane settings-pane">
-    <section>
-      <h1>App Settings</h1>
-      <h2>General</h2>
-      <label className="setting-line"><span>Default preset</span>
-        <Select value={settings.defaultPresetId} onValueChange={(value) => onSettings({ ...settings, defaultPresetId: value })}>
-          <SelectTrigger><SelectValue /></SelectTrigger>
-          <SelectContent>{presets.map((preset) => <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>)}</SelectContent>
-        </Select>
-      </label>
-      <label className="setting-line"><span>Auto-crop new images</span>
-        <Switch checked={settings.autoCrop} onCheckedChange={(value) => onSettings({ ...settings, autoCrop: value })} />
-      </label>
-      <div className="setting-line"><span>App theme</span>
-        <div className="segmented">{(["light", "dark", "system"] as const).map((theme) =>
-          <button key={theme} className={settings.theme === theme ? "active" : ""} onClick={() => onSettings({ ...settings, theme })}>
-            {theme[0].toUpperCase() + theme.slice(1)}
-          </button>)}
-        </div>
-      </div>
-    </section>
-    <section>
-      <h2>Settings</h2>
-      {sections.map(([value, label]) => <button key={value} className={`settings-card ${section === value ? "active" : ""}`} aria-current={section === value} onClick={() => setSection(value)}>
-        {label} <ChevronRight />
-      </button>)}
-    </section>
-    <section>
-      <h2>Settings Details</h2>
-      {section === "gpu" && <>
-        <label className="setting-line"><span>Hardware acceleration</span>
-          <Switch checked={settings.hardware} onCheckedChange={(value) => onSettings({ ...settings, hardware: value })} />
-        </label>
-        <label className="field-label">Advanced GPU priority</label>
-        <Select value={settings.gpuPriority} disabled={!settings.hardware} onValueChange={(value) => onSettings({ ...settings, gpuPriority: value as AppSettings["gpuPriority"] })}>
-          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="primary">Primary</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="low">Low</SelectItem></SelectContent>
-        </Select>
-        <div className="slider-label"><span>Thread count</span><strong>{settings.threads}</strong></div>
-        <Slider value={[settings.threads]} min={1} max={16} step={1} onValueChange={([value]) => onSettings({ ...settings, threads: value })} />
-        <div className="slider-label"><span>RAM allocation</span><strong>{settings.ram} GB</strong></div>
-        <Slider value={[settings.ram]} min={4} max={64} step={4} onValueChange={([value]) => onSettings({ ...settings, ram: value })} />
-        <p className="inspector-note">Higher allocation keeps large batches resident in memory instead of paging tiles to disk.</p>
-      </>}
-      {section === "shortcuts" && SHORTCUTS.map(([keys, label]) => <div key={keys} className="shortcut-row"><span>{label}</span><kbd>{keys}</kbd></div>)}
-      {section === "paths" && <>
-        <p className="inspector-note">Export writes here unless the export dialog overrides it for a single run.</p>
-        <label className="field-label">Default output folder</label>
-        <div className="output-folder"><input value="C:\\Products\\MINIMA_Output" readOnly aria-label="Default output folder" /><FolderOpen /></div>
-      </>}
-    </section>
+    <div className="settings-card-wrap">
+      <header className="settings-intro">
+        <h1>Settings</h1>
+        <p>Keyboard shortcuts live under the <strong>?</strong> button in the top bar.
+          Presets are managed on the Presets screen.</p>
+      </header>
+      <fieldset className="theme-picker">
+        <legend>Appearance</legend>
+        {options.map(([value, label, hint]) => <label key={value} className={theme === value ? "active" : ""}>
+          <input type="radio" name="theme" value={value} checked={theme === value} onChange={() => onTheme(value)} />
+          <span className={`theme-swatch theme-swatch-${value}`} aria-hidden="true" />
+          <span className="theme-copy"><strong>{label}</strong><em>{hint}</em></span>
+        </label>)}
+      </fieldset>
+    </div>
   </div>;
 }
-
