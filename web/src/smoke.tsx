@@ -93,8 +93,8 @@ check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} preset
   scope="selected" scopeCount={3} selectedCount={3} totalCount={4} compare overlay={100} processing={false} progress={0}
   onPreset={noop} onDoc={noop} onGuides={noop} onScope={noop} onOverlay={noop} onApply={noop} onFocus={noop}
   onClose={noop} onResetGuides={noop} />,
-  "Resize Inspector", "Alignment matrix", "Flip H", "Snap to safe area", "Canvas background",
-  "Overlay opacity", "Apply to 3 images");
+  "Resize Inspector", "Alignment matrix", "Flip H", "Guides", "Snap safe", "Canvas background",
+  "Overlay opacity", "Apply resize to", "Apply to 3 images");
 
 check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} onOptions={noop} onStart={noop} />);
 
