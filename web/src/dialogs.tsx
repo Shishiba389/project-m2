@@ -17,12 +17,12 @@ export type ExportOptions = {
   suffix: string;
   dpi: number;
   maxBytes: number | null;
-  selectedIds: number[];
+  selectedIds: number[] | null;
   customNames: Record<number, string>;
 };
 
 export const defaultExportOptions: ExportOptions = {
-  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null, selectedIds: [], customNames: {},
+  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null, selectedIds: null, customNames: {},
 };
 
 export const SHORTCUTS: [string, string][] = [
@@ -44,7 +44,7 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
   options: ExportOptions; canvas: string; onOptions: (next: ExportOptions) => void; onStart: () => void;
 }) {
   const [sizeUnit, setSizeUnit] = useState<"KB" | "MB">("MB");
-  const selected = useMemo(() => new Set(options.selectedIds.length ? options.selectedIds : queue.map((asset) => asset.id)), [options.selectedIds, queue]);
+  const selected = useMemo(() => new Set(options.selectedIds === null ? queue.map((asset) => asset.id) : options.selectedIds), [options.selectedIds, queue]);
   const selectedQueue = queue.filter((asset) => selected.has(asset.id));
   const estimate = selectedQueue.reduce((total, asset) => total + megabytes(asset), 0) * (options.format === "png" ? 1 : options.quality / 100);
   const missing = queue.filter((asset) => !asset.file).length;

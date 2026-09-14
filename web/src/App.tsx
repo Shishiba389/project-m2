@@ -101,8 +101,8 @@ export function MinimaWorkspace() {
   const counts = useMemo(() => countByStatus(assets, target), [assets, target]);
   const needsAttention = counts.Warning + counts.Error;
   const exportQueue = useMemo(() => assets.filter((asset) => statusOf(asset, target) !== "Pending"), [assets, target]);
-  const selectedExportQueue = useMemo(() => exportOptions.selectedIds.length
-    ? exportQueue.filter((asset) => exportOptions.selectedIds.includes(asset.id))
+  const selectedExportQueue = useMemo(() => exportOptions.selectedIds !== null
+    ? exportQueue.filter((asset) => exportOptions.selectedIds!.includes(asset.id))
     : exportQueue, [exportOptions.selectedIds, exportQueue]);
   const visible = useMemo(() => filterAssets(assets, target, filter), [assets, target, filter]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
