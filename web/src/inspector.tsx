@@ -69,6 +69,11 @@ export function Inspector({
         <Checkbox checked={doc.lock} onCheckedChange={(value) => onDoc((current) => ({ ...current, lock: Boolean(value), ratio: current.width / current.height }))} />
         Aspect ratio lock · {ratioLabel(doc.width, doc.height)}
       </label>
+      <label className="check-row template-lock-row">
+        <Checkbox checked={Boolean(doc.templateLocked)} onCheckedChange={(value) => onDoc((current) => ({ ...current, templateLocked: Boolean(value) }))} />
+        Lock frame layout
+      </label>
+      {doc.templateLocked && <p className="inspector-note">Frame is locked. Import, fit and export remain available.</p>}
 
       <label className="field-label">How the image fills the frame</label>
       <div className="segmented">{(["Fit", "Fill", "Stretch"] as const).map((mode) =>
@@ -79,15 +84,15 @@ export function Inspector({
           to take it to the canvas edges. Every image in the queue uses it. */}
       <label className="field-label">Placeholder frame</label>
       <div className="frame-actions">
-        <button onClick={() => onDoc((current) => ({ ...current, box: fullBox() }))}>Fill canvas</button>
-        <button onClick={() => onDoc((current) => ({ ...current, box: safeBox(current.safeX, current.safeY) }))}>Safe area</button>
+        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: fullBox() }))}>Fill canvas</button>
+        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: safeBox(current.safeX, current.safeY) }))}>Safe area</button>
       </div>
       <div className="margin-grid">
         {([["top", "Top"], ["right", "Right"], ["bottom", "Bottom"], ["left", "Left"]] as [keyof Margins, string][])
           .map(([side, label]) => <label key={side}>
             <span>{label}</span>
             <input type="number" min={0} max={96} step={0.5} aria-label={`${label} margin, percent`}
-              value={round(margins[side])} onChange={(event) => setMargin(side, Number(event.target.value))} />
+              disabled={Boolean(doc.templateLocked)} value={round(margins[side])} onChange={(event) => setMargin(side, Number(event.target.value))} />
           </label>)}
       </div>
       <p className="inspector-note">Frame {Math.round((doc.box.w / 100) * doc.width)} × {Math.round((doc.box.h / 100) * doc.height)} px</p>
@@ -95,12 +100,12 @@ export function Inspector({
       <label className="field-label">Alignment matrix</label>
       <div className="alignment-grid">{ALIGNMENTS.map((position) =>
         <button key={position} className={position === doc.align ? "active" : ""} aria-label={`Align ${position.replace("-", " ")}`} title={`Align ${position.replace("-", " ")}`}
-          onClick={() => onDoc((current) => ({ ...current, align: position, box: anchor(position, current.box, current.safeX, current.safeY) }))}><span /></button>)}
+          disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, align: position, box: anchor(position, current.box, current.safeX, current.safeY) }))}><span /></button>)}
       </div>
       {/* Panel 3: flip sits with the alignment matrix. */}
       <div className="flip-row">
-        <button className={doc.flipH ? "active" : ""} aria-pressed={doc.flipH} onClick={() => onDoc((current) => ({ ...current, flipH: !current.flipH }))}><FlipHorizontal /> Flip H</button>
-        <button className={doc.flipV ? "active" : ""} aria-pressed={doc.flipV} onClick={() => onDoc((current) => ({ ...current, flipV: !current.flipV }))}><FlipVertical /> Flip V</button>
+        <button disabled={Boolean(doc.templateLocked)} className={doc.flipH ? "active" : ""} aria-pressed={doc.flipH} onClick={() => onDoc((current) => ({ ...current, flipH: !current.flipH }))}><FlipHorizontal /> Flip H</button>
+        <button disabled={Boolean(doc.templateLocked)} className={doc.flipV ? "active" : ""} aria-pressed={doc.flipV} onClick={() => onDoc((current) => ({ ...current, flipV: !current.flipV }))}><FlipVertical /> Flip V</button>
       </div>
 
       <div className="slider-label"><span>Safe area · vertical</span><strong>{doc.safeY.toFixed(2)}%</strong></div>

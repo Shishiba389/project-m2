@@ -20,6 +20,7 @@ export type ExportOptions = {
   selectedIds: number[] | null;
   customNames: Record<number, string>;
 };
+export type ExportWorkflow = { id: string; name: string; options: ExportOptions };
 
 export const defaultExportOptions: ExportOptions = {
   format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null, selectedIds: null, customNames: {},
@@ -39,9 +40,10 @@ function Thumb({ asset }: { asset: Asset }) {
   return <div className={`product-placeholder product-${asset.kind}`} aria-hidden="true"><Package strokeWidth={1.25} /><span /></div>;
 }
 
-export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOptions, onStart }: {
+export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOptions, onStart, workflows = [], onSaveWorkflow, onApplyWorkflow }: {
   open: boolean; onOpenChange: (value: boolean) => void; queue: Asset[];
   options: ExportOptions; canvas: string; onOptions: (next: ExportOptions) => void; onStart: () => void;
+  workflows?: ExportWorkflow[]; onSaveWorkflow?: (name: string) => void; onApplyWorkflow?: (workflow: ExportWorkflow) => void;
 }) {
   const [sizeUnit, setSizeUnit] = useState<"KB" | "MB">("MB");
   const selected = useMemo(() => new Set(options.selectedIds === null ? queue.map((asset) => asset.id) : options.selectedIds), [options.selectedIds, queue]);
@@ -59,6 +61,8 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
     </DialogHeader>
     <div className="export-grid">
       <section>
+        {workflows.length > 0 && <div className="workflow-row"><label className="field-label" htmlFor="export-workflow">Saved workflow</label><select id="export-workflow" className="export-input" defaultValue="" onChange={(event) => { const workflow = workflows.find((item) => item.id === event.target.value); if (workflow) onApplyWorkflow?.(workflow); }}><option value="">Choose workflow…</option>{workflows.map((workflow) => <option key={workflow.id} value={workflow.id}>{workflow.name}</option>)}</select></div>}
+        {onSaveWorkflow && <Button variant="outline" size="sm" onClick={() => { const name = window.prompt("Name this export workflow", "Product pack"); if (name?.trim()) onSaveWorkflow(name.trim()); }}>Save current workflow</Button>}
         <label className="field-label">File format</label>
         <Select value={options.format} onValueChange={(value) => onOptions({ ...options, format: value as Format })}>
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>

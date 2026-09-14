@@ -7,7 +7,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   CloudDialog, defaultExportOptions, ExportDialog, ExportProgress, PresetDialog, RemoveDialog,
-  ShortcutsDialog, type ExportOptions,
+  ShortcutsDialog, type ExportOptions, type ExportWorkflow,
 } from "@/src/dialogs";
 import {
   downloadZip, EXPORT_ZIP, runExport, specFromDoc, type ExportProgress as ExportRunProgress,
@@ -76,6 +76,9 @@ export function MinimaWorkspace() {
   const [processing, setProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [exportOptions, setExportOptions] = useState<ExportOptions>(defaultExportOptions);
+  const [exportWorkflows, setExportWorkflows] = useState<ExportWorkflow[]>(() => {
+    try { return JSON.parse(localStorage.getItem("minima-export-workflows") || "[]") as ExportWorkflow[]; } catch { return []; }
+  });
   const [exportOpen, setExportOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
@@ -91,6 +94,8 @@ export function MinimaWorkspace() {
   const [fork, setFork] = useState<ReturnType<typeof summarise> | null>(null);
   const filesInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { localStorage.setItem("minima-export-workflows", JSON.stringify(exportWorkflows)); }, [exportWorkflows]);
 
   const { doc, setDoc, undo, redo, canUndo, canRedo } = useHistory(initialDoc);
   const active = assets.find((asset) => asset.id === activeId) ?? assets[0];
@@ -166,6 +171,7 @@ export function MinimaWorkspace() {
   }, [doc, processing, scoped, touch]);
 
   const setActiveBox = useCallback((box: Doc["box"]) => {
+    if (doc.templateLocked) return;
     setDoc((current) => ({ ...current, box }));
     if (!active) return;
     const recipe = createRecipe({ ...doc, box });
@@ -496,7 +502,10 @@ export function MinimaWorkspace() {
     </footer>
 
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} queue={exportQueue} options={exportOptions}
-      canvas={`${doc.width} × ${doc.height} px`} onOptions={setExportOptions} onStart={startExport} />
+      canvas={`${doc.width} × ${doc.height} px`} onOptions={setExportOptions} onStart={startExport}
+      workflows={exportWorkflows}
+      onSaveWorkflow={(name) => { const workflow: ExportWorkflow = { id: `${Date.now()}-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, name, options: exportOptions }; setExportWorkflows((current) => [...current.filter((item) => item.name !== name), workflow]); touch(`Saved workflow ${name}`); }}
+      onApplyWorkflow={(workflow) => { setExportOptions({ ...workflow.options, selectedIds: null, customNames: {} }); touch(`Loaded workflow ${workflow.name}`); }} />
     <ExportProgress run={run} done={runDone} bytes={runBytes} queue={selectedExportQueue} options={exportOptions}
       onCancel={() => { cancelExport.current = true; }}
       onAgain={() => exportZip.current && downloadZip(exportZip.current, EXPORT_ZIP)}

@@ -889,6 +889,7 @@ body { background: var(--app); }
   padding: 1px 5px; border-radius: 4px; background: var(--tile-5); color: var(--ink-4); font-size: 10px;
 }
 .size-limit-row{display:flex;align-items:center;gap:6px}.size-limit-row .export-input{flex:1}.size-units{flex:0 0 auto}.size-units button{padding:6px 8px;font-size:10px}
+.workflow-row{display:grid;gap:5px}.workflow-row select{appearance:auto}.template-lock-row{border-top:1px solid var(--line);padding-top:7px;margin-top:2px}
 .export-batch-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.export-rename-list{display:flex;flex-direction:column;gap:6px;max-height:360px;overflow:auto;padding-right:2px}.export-rename-row{display:flex;align-items:center;gap:7px;min-width:0}.export-rename-row .asset-image,.export-rename-row .product-placeholder{width:38px;min-width:38px;height:32px;min-height:32px;border-radius:4px}.export-rename-row input{min-width:0;flex:1;height:30px;padding:0 7px;border:1px solid var(--line);border-radius:5px;background:var(--control);color:var(--ink-3);font-size:11px}.export-extension{font-size:10px;color:var(--ink-9)}
 
 /* Focus mode keeps the canvas dominant while retaining the same editable frame

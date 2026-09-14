@@ -443,6 +443,8 @@ export type Doc = {
   flipH: boolean;
   flipV: boolean;
   box: Box;
+  /** Locks the frame/layout while still allowing image import and export. */
+  templateLocked?: boolean;
 };
 
 export const srcRatio = (asset: Asset) => asset.src.w / asset.src.h;
