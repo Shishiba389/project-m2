@@ -228,12 +228,13 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
 
 /* -------------------------------------------------------------------- editor */
 
-export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onImport, onFit, onToggleGrid, onStep }: {
+export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false }: {
   asset: Asset; assets: Asset[]; selected: number[]; doc: Doc; zoom: number;
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
   onBox: (box: Box) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
-  onImport: () => void; onFit: (fit: Doc["fit"]) => void;
+  onImport: () => void; onDrop: (files: FileList) => void; onFit: (fit: Doc["fit"]) => void;
   onToggleGrid: () => void; onStep: (delta: number) => void;
+  focusMode?: boolean;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const activeThumb = useRef<HTMLButtonElement>(null);
@@ -246,6 +247,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   }, [asset.id]);
   const splitRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ mode: "move" | Handle; x: number; y: number; box: Box } | null>(null);
+  const [dropActive, setDropActive] = useState(false);
 
   const place = (box: Box) => onBox(clampBox(snapBox(box, doc.safeX, doc.safeY, { safe: guides.snapSafe, grid: guides.snapGrid })));
   const nudge = (dx: number, dy: number) => place({ ...doc.box, x: doc.box.x + dx, y: doc.box.y + dy });
@@ -307,16 +309,20 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
     <div className="original-object" style={{ opacity: overlay / 100 }}><AssetImage asset={asset} fit="contain" large /></div>
   </div>;
 
-  return <div className="content-pane editor-pane">
-    <div className="editor-stage">
-      <div className="editor-toolbar" aria-label="Editor canvas tools">
+  return <div className={`content-pane editor-pane ${focusMode ? "focus-editor-pane" : ""}`}>
+    <div className="editor-stage"
+      onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDropActive(true); }}
+      onDragLeave={(event) => { if (event.currentTarget === event.target) setDropActive(false); }}
+      onDrop={(event) => { event.preventDefault(); setDropActive(false); if (event.dataTransfer.files.length) onDrop(event.dataTransfer.files); }}>
+      {!focusMode && !assets.length && <div className="editor-toolbar" aria-label="Editor canvas tools">
         <Button size="sm" variant="secondary" onClick={onImport}><Upload /> Import images</Button>
         <div className="editor-toolbar-group" role="group" aria-label="Image fill mode">
           {(["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
             aria-pressed={doc.fit === fit} onClick={() => onFit(fit)}>{fit}</button>)}
         </div>
         <span className="editor-toolbar-note">{assets.length ? `${assets.length} image${assets.length === 1 ? "" : "s"}` : "Empty canvas — import when ready"}</span>
-      </div>
+      </div>}
+      {dropActive && <div className="editor-drop-overlay" role="status"><Upload /><strong>Drop images into the frame</strong><span>They will be placed on this canvas</span></div>}
       {/* Panel 10: rulers and the grid toggle sit on the canvas chrome. */}
       {guides.rulers && !compare && <>
         <div className="ruler ruler-top" aria-hidden="true" />
@@ -348,7 +354,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
           : <div className="single-canvas">{compareView === "before" ? original : resized}</div>
         : <div className="single-canvas">{resized}</div>}
     </div>
-    <div className="filmstrip">
+    {!focusMode && <div className="filmstrip">
       <div className="strip-nav">
         <button aria-label="Previous image" onClick={() => onStep(-1)}><ChevronLeft /></button>
         <span>{activeIndex + 1} / {assets.length}</span>
@@ -366,7 +372,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
           {selectedSet.has(item.id) && <Check className="film-check" />}
         </button>;
       })}</div>
-    </div>
+    </div>}
   </div>;
 }
 

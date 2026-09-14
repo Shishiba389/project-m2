@@ -18,7 +18,7 @@ import { Inspector } from "@/src/inspector";
 import { applyRecipe, applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
 import {
   defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
-  AssetImage, Review, SettingsScreen, type CompareView, type Guides, type Theme,
+  Review, SettingsScreen, type CompareView, type Guides, type Theme,
 } from "@/src/screens";
 import {
   backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
@@ -191,7 +191,7 @@ export function MinimaWorkspace() {
    * not enough. toSources also filters by extension, which a directory picker
    * needs — it reports an empty MIME type for plenty of images.
    */
-  const importFiles = useCallback(async (incoming: FileList | null) => {
+  const importFiles = useCallback(async (incoming: FileList | null, quick = false) => {
     const allCandidates = toSources(Array.from(incoming ?? []), Date.now());
     let preSkipped = 0;
     const knownNames = new Set(assets.map((asset) => asset.name));
@@ -227,7 +227,8 @@ export function MinimaWorkspace() {
     setFork(summarise(picked));
     const skipped = merged.skipped + preSkipped;
     touch(`Imported ${merged.added}${skipped ? `, skipped ${skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
-  }, [assets, policy, touch]);
+    if (quick) { setFork(null); setFocus(false); goto("editor"); }
+  }, [assets, goto, policy, touch]);
 
   const confirmRemoval = useCallback(() => {
     if (!removeIntent) return;
@@ -352,18 +353,24 @@ export function MinimaWorkspace() {
         <span>{assets.findIndex((asset) => asset.id === active.id) + 1} / {assets.length}</span>
         <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
       </div>
-      <div className="focus-toolbar-group focus-fit" role="group" aria-label="Frame fill mode">
+      <div className="focus-tools" role="group" aria-label="Focus editing tools">
         {(["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
+          data-tip={`${fit} image in frame`} title={`${fit} image in frame`} aria-label={`${fit} image in frame`}
           aria-pressed={doc.fit === fit} onClick={() => setDoc((current) => ({ ...current, fit }))}>{fit}</button>)}
+        <button className="focus-tool" data-tip="Toggle guides" title="Toggle guides" aria-label="Toggle guides"
+          aria-pressed={guides.grid} onClick={() => setGuides((current) => ({ ...current, grid: !current.grid }))}>Grid</button>
+        <button className="focus-tool" data-tip="Reset frame to canvas" title="Reset frame to canvas" aria-label="Reset frame to canvas"
+          onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Reset</button>
       </div>
       <Button variant="secondary" size="sm" onClick={() => { setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
       <Button variant="ghost" size="icon" aria-label="Close focus mode" onClick={() => setFocus(false)}>×</Button>
     </header>
-    <div className="focus-canvas" style={{ transform: `scale(${zoom / 100})`, background: doc.background, aspectRatio: `${doc.width} / ${doc.height}` }}>
-      <div className="focus-frame" style={{ left: `${doc.box.x}%`, top: `${doc.box.y}%`, width: `${doc.box.w}%`, height: `${doc.box.h}%` }}>
-        <AssetImage asset={active} fit={doc.fit === "Fit" ? "contain" : doc.fit === "Fill" ? "cover" : "fill"} large />
-        <span className="focus-frame-outline" aria-hidden="true" />
-      </div>
+    <div className="focus-editor-host">
+      <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom} compare={false}
+        compareView="split" splitAt={splitAt} overlay={overlay} guides={guides} target={target}
+        onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onDrop={(files) => importFiles(files, true)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode />
     </div>
     <button className="canvas-arrow right" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></button>
     <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
@@ -447,6 +454,7 @@ export function MinimaWorkspace() {
       {screen === "editor" && <Editor asset={editorAsset} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onDrop={(files) => importFiles(files, true)}
         onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
