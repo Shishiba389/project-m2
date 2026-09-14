@@ -105,7 +105,9 @@ export function MinimaWorkspace() {
 
   const counts = useMemo(() => countByStatus(assets, target), [assets, target]);
   const needsAttention = counts.Warning + counts.Error;
-  const exportQueue = useMemo(() => assets.filter((asset) => statusOf(asset, target) !== "Pending"), [assets, target]);
+  // Export renders the current document directly; an image does not need a
+  // prior Apply step to be exportable. Only corrupt/missing sources are omitted.
+  const exportQueue = useMemo(() => assets.filter((asset) => Boolean(asset.file) && !asset.corrupt), [assets]);
   const selectedExportQueue = useMemo(() => exportOptions.selectedIds !== null
     ? exportQueue.filter((asset) => exportOptions.selectedIds!.includes(asset.id))
     : exportQueue, [exportOptions.selectedIds, exportQueue]);
@@ -440,7 +442,7 @@ export function MinimaWorkspace() {
         <RailButton icon={ImageIcon} label="Images" active={["gallery", "editor", "review"].includes(screen)} onClick={() => goto(assets.length ? imageScreen : "editor")} />
         <RailButton icon={Layers} label="Batch" active={screen === "batch"} disabled={!sources.length} onClick={() => goto("batch")} />
         <RailButton icon={Layers3} label="Presets" active={screen === "presets"} onClick={() => goto("presets")} />
-        <RailButton icon={Upload} label="Export" disabled={!exportQueue.length} onClick={() => setExportOpen(true)} />
+        <RailButton icon={Upload} label="Export" active={exportOpen} disabled={!exportQueue.length} onClick={() => setExportOpen(true)} />
       </div>
       <div className="rail-bottom">
         <RailButton icon={Settings} label="Settings" active={screen === "settings"} onClick={() => goto("settings")} />
@@ -494,7 +496,7 @@ export function MinimaWorkspace() {
           <button className={screen === "editor" ? "active" : ""} disabled={!assets.length} onClick={() => goto("editor")}>Editor</button>
         </div>
         <Button variant="secondary" size="sm" disabled={processing || !scoped.length} onClick={runApply}>Apply preset</Button>
-        <Button size="sm" disabled={!exportQueue.length} onClick={() => setExportOpen(true)}><Download /> Export</Button>
+        <Button className="export-cta" size="sm" disabled={!exportQueue.length} onClick={() => setExportOpen(true)}><Download /> Export</Button>
       </div>}
       <span>{onImages && hasActive
         ? `${active.src.w} × ${active.src.h} px · ${ratioLabel(doc.width, doc.height)} · ${active.format.toUpperCase()} · ${megabytes(active).toFixed(1)} MB`
@@ -526,7 +528,7 @@ export function MinimaWorkspace() {
 }
 
 function RailButton({ icon: Icon, label, active, disabled, onClick }: { icon: typeof Import; label: string; active?: boolean; disabled?: boolean; onClick: () => void }) {
-  return <button className={active ? "active" : ""} aria-current={active ? "page" : undefined} disabled={disabled} onClick={onClick}>
+  return <button className={`${active ? "active " : ""}${label === "Export" ? "export-rail " : ""}`} aria-current={active ? "page" : undefined} disabled={disabled} onClick={onClick}>
     <Icon aria-hidden="true" /><span>{label}</span>
   </button>;
 }

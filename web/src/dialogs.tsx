@@ -55,8 +55,8 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
     <DialogHeader>
       <DialogTitle>Export {queue.length} images</DialogTitle>
       <DialogDescription>
-        Every processed image, rendered at {canvas} into the placeholder frame.
-        Pending images are excluded.
+        Every available image is rendered at {canvas} into the current frame.
+        Corrupt or missing source files are excluded.
       </DialogDescription>
     </DialogHeader>
     <div className="export-grid">
@@ -112,7 +112,7 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
     </div>
     <DialogFooter>
       <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-      <Button disabled={!selectedQueue.length} onClick={onStart}><Download /> Export selected batch</Button>
+      <Button className="export-cta" disabled={!selectedQueue.length} onClick={onStart}><Download /> Export selected batch</Button>
     </DialogFooter>
   </DialogContent></Dialog>;
 }
