@@ -18,7 +18,7 @@ import { Inspector } from "@/src/inspector";
 import { applyRecipe, applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
 import {
   defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
-  ProductPlaceholder, Review, SettingsScreen, type CompareView, type Guides, type Theme,
+  AssetImage, Review, SettingsScreen, type CompareView, type Guides, type Theme,
 } from "@/src/screens";
 import {
   backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
@@ -27,6 +27,10 @@ import {
 } from "@/src/flow";
 
 const initialDoc = docFromPreset(presetById("zalando"));
+const EMPTY_EDITOR_ASSET: Asset = {
+  id: 0, name: "Untitled canvas", kind: "shoe", format: "png", src: { w: 1, h: 1 },
+  processed: false, overflow: false, fixed: false, corrupt: false,
+};
 
 /** Undo/redo over the document snapshot only — navigation is never undoable. */
 function useHistory(initial: Doc) {
@@ -90,6 +94,7 @@ export function MinimaWorkspace() {
 
   const { doc, setDoc, undo, redo, canUndo, canRedo } = useHistory(initialDoc);
   const active = assets.find((asset) => asset.id === activeId) ?? assets[0];
+  const editorAsset = active ?? EMPTY_EDITOR_ASSET;
   const hasActive = Boolean(active);
   const target = useMemo(() => docTarget(doc, presets), [doc, presets]);
 
@@ -285,7 +290,9 @@ export function MinimaWorkspace() {
     touch(`Exported ${result.progress.done - result.progress.failed.length} image(s)`);
   }, [doc, exportOptions, exportQueue, touch]);
 
-  useEffect(() => { if (!assets.length && screen !== "batch") goto("import"); }, [assets.length, goto, screen]);
+  useEffect(() => {
+    if (!assets.length && !["batch", "editor", "presets", "settings"].includes(screen)) goto("import");
+  }, [assets.length, goto, screen]);
 
   useEffect(() => { assetsRef.current = assets; }, [assets]);
   useEffect(() => () => {
@@ -337,10 +344,29 @@ export function MinimaWorkspace() {
   }, [assets]);
 
   if (focus && hasActive) return <main className="focus-workspace">
-    <button className="focus-exit" onClick={() => setFocus(false)}>Press Ctrl+Shift+F to exit Focus Mode</button>
-    <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
-    <div className="focus-canvas" style={{ transform: `scale(${zoom / 100})` }}><ProductPlaceholder kind={active.kind} large /></div>
+    <header className="focus-toolbar" aria-label="Focus mode toolbar">
+      <Button variant="ghost" size="sm" onClick={() => setFocus(false)}><ArrowLeft /> Exit focus</Button>
+      <div className="focus-title"><strong>{active.name}</strong><span>Editor focus mode</span></div>
+      <div className="focus-toolbar-group" role="group" aria-label="Image navigation">
+        <Button variant="ghost" size="icon" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></Button>
+        <span>{assets.findIndex((asset) => asset.id === active.id) + 1} / {assets.length}</span>
+        <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
+      </div>
+      <div className="focus-toolbar-group focus-fit" role="group" aria-label="Frame fill mode">
+        {(["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
+          aria-pressed={doc.fit === fit} onClick={() => setDoc((current) => ({ ...current, fit }))}>{fit}</button>)}
+      </div>
+      <Button variant="secondary" size="sm" onClick={() => { setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
+      <Button variant="ghost" size="icon" aria-label="Close focus mode" onClick={() => setFocus(false)}>×</Button>
+    </header>
+    <div className="focus-canvas" style={{ transform: `scale(${zoom / 100})`, background: doc.background, aspectRatio: `${doc.width} / ${doc.height}` }}>
+      <div className="focus-frame" style={{ left: `${doc.box.x}%`, top: `${doc.box.y}%`, width: `${doc.box.w}%`, height: `${doc.box.h}%` }}>
+        <AssetImage asset={active} fit={doc.fit === "Fit" ? "contain" : doc.fit === "Fill" ? "cover" : "fill"} large />
+        <span className="focus-frame-outline" aria-hidden="true" />
+      </div>
+    </div>
     <button className="canvas-arrow right" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></button>
+    <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
     <div className="focus-zoom">
       <button aria-label="Zoom out" onClick={() => setZoom(Math.max(25, zoom - 25))}><Minus size={16} /></button>
       <span>{zoom}%</span>
@@ -392,7 +418,7 @@ export function MinimaWorkspace() {
     <aside className="rail" aria-label="Main navigation">
       <div className="rail-main">
         <RailButton icon={Import} label="Import" active={screen === "import"} onClick={() => goto("import")} />
-        <RailButton icon={ImageIcon} label="Images" active={["gallery", "editor", "review"].includes(screen)} disabled={!assets.length} onClick={() => goto(imageScreen)} />
+        <RailButton icon={ImageIcon} label="Images" active={["gallery", "editor", "review"].includes(screen)} onClick={() => goto(assets.length ? imageScreen : "editor")} />
         <RailButton icon={Layers} label="Batch" active={screen === "batch"} disabled={!sources.length} onClick={() => goto("batch")} />
         <RailButton icon={Layers3} label="Presets" active={screen === "presets"} onClick={() => goto("presets")} />
         <RailButton icon={Upload} label="Export" disabled={!exportQueue.length} onClick={() => setExportOpen(true)} />
@@ -418,19 +444,20 @@ export function MinimaWorkspace() {
       {screen === "gallery" && <Gallery assets={visible} total={assets.length} selected={selected} counts={counts} filter={filter} zoom={zoom}
         needsAttention={needsAttention} target={target} onFilter={setFilter} onChoose={chooseAsset} onOpen={openEditor}
         onReview={() => goto("review")} onRemove={askRemoval} />}
-      {screen === "editor" && hasActive && <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom}
+      {screen === "editor" && <Editor asset={editorAsset} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor}
+        onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
 
-      {inspectorOpen && hasActive && !["import", "presets", "settings", "batch"].includes(screen) && (
-        <Inspector doc={doc} target={target} asset={active} presets={presets} guides={guides} scope={scope}
+      {inspectorOpen && (screen === "editor" || (hasActive && !["import", "presets", "settings", "batch"].includes(screen))) && (
+        <Inspector doc={doc} target={target} asset={editorAsset} presets={presets} guides={guides} scope={scope}
             scopeCount={scoped.length} selectedCount={selected.length} totalCount={assets.length}
             compare={compare} overlay={overlay} processing={processing} progress={progress}
             onPreset={applyPreset} onDoc={setDoc} onGuides={setGuides} onScope={setScope} onOverlay={setOverlay}
-            onApply={runApply} onFocus={() => { goto("editor"); setFocus(true); }} onClose={() => setInspectorOpen(false)}
+            onApply={runApply} onFocus={() => { if (hasActive) { goto("editor"); setFocus(true); } else touch("Import an image to enter focus mode"); }} onClose={() => setInspectorOpen(false)}
             onResetGuides={() => { setGuides(defaultGuides); applyPreset(doc.presetId); }} />)}
 
     </section>

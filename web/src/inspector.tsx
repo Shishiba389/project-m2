@@ -30,13 +30,9 @@ export function Inspector({
   onOverlay: (value: number) => void;
   onApply: () => void; onFocus: () => void; onClose: () => void; onResetGuides: () => void;
 }) {
-  /** Any change to the canvas rules re-derives the object box from the same rules. */
+  /** Canvas rules stay independent from the user's custom frame geometry. */
   const patchDoc = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
-  /** Changing the safe area reframes the placeholder to match it. */
-  const reframe = (patch: Partial<Doc>) => onDoc((current) => {
-    const next = { ...current, ...patch };
-    return { ...next, box: safeBox(next.safeX, next.safeY) };
-  });
+  const reframe = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
   const setDimension = (edge: "width" | "height", value: number) => onDoc((current) => {
     if (!Number.isFinite(value) || value <= 0) return current;
     return edge === "width"
@@ -160,4 +156,3 @@ export function Inspector({
     </div>
   </aside>;
 }
-

@@ -228,10 +228,11 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
 
 /* -------------------------------------------------------------------- editor */
 
-export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onToggleGrid, onStep }: {
+export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onImport, onFit, onToggleGrid, onStep }: {
   asset: Asset; assets: Asset[]; selected: number[]; doc: Doc; zoom: number;
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
   onBox: (box: Box) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
+  onImport: () => void; onFit: (fit: Doc["fit"]) => void;
   onToggleGrid: () => void; onStep: (delta: number) => void;
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -292,6 +293,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
         if (event.key === "ArrowUp") { event.preventDefault(); nudge(0, -amount); }
         if (event.key === "ArrowDown") { event.preventDefault(); nudge(0, amount); }
       }}
+      onDoubleClick={() => onFit("Fill")}
       {...dragProps("move")}>
       <AssetImage asset={asset} fit={objectFitFor(doc.fit)} large />
       <div className="frame-outline" aria-hidden="true" />
@@ -307,6 +309,14 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
 
   return <div className="content-pane editor-pane">
     <div className="editor-stage">
+      <div className="editor-toolbar" aria-label="Editor canvas tools">
+        <Button size="sm" variant="secondary" onClick={onImport}><Upload /> Import images</Button>
+        <div className="editor-toolbar-group" role="group" aria-label="Image fill mode">
+          {(["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
+            aria-pressed={doc.fit === fit} onClick={() => onFit(fit)}>{fit}</button>)}
+        </div>
+        <span className="editor-toolbar-note">{assets.length ? `${assets.length} image${assets.length === 1 ? "" : "s"}` : "Empty canvas — import when ready"}</span>
+      </div>
       {/* Panel 10: rulers and the grid toggle sit on the canvas chrome. */}
       {guides.rulers && !compare && <>
         <div className="ruler ruler-top" aria-hidden="true" />
