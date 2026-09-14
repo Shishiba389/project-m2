@@ -43,12 +43,12 @@ export const PRESETS: Preset[] = [
   { id: "lazada", label: "Lazada (1:1)", category: "Marketplace", width: 1200, height: 1200, safeX: 6, safeY: 6, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "ig-square", label: "Instagram Square (1:1)", category: "Social Media", width: 1080, height: 1080, safeX: 5, safeY: 5, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "ig-portrait", label: "Instagram Portrait (4:5)", category: "Social Media", width: 1080, height: 1350, safeX: 6, safeY: 8, background: "#FFFFFF", align: "center", fit: "Fit" },
-  { id: "ig-story", label: "Instagram Story (9:16)", category: "Social Media", width: 1080, height: 1920, safeX: 8, safeY: 14, background: "#111111", align: "center", fit: "Fit" },
-  { id: "tiktok", label: "TikTok (9:16)", category: "Social Media", width: 1080, height: 1920, safeX: 8, safeY: 16, background: "#111111", align: "center", fit: "Fit" },
+  { id: "ig-story", label: "Instagram Story (9:16)", category: "Social Media", width: 1080, height: 1920, safeX: 8, safeY: 14, background: "#FFFFFF", align: "center", fit: "Fit" },
+  { id: "tiktok", label: "TikTok (9:16)", category: "Social Media", width: 1080, height: 1920, safeX: 8, safeY: 16, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "facebook", label: "Facebook (1:1)", category: "Social Media", width: 1200, height: 1200, safeX: 6, safeY: 6, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "product-master", label: "Product Master", category: "Custom", width: 3000, height: 3000, safeX: 10, safeY: 10, background: "#FFFFFF", align: "center", fit: "Fit" },
-  { id: "boj-catalog", label: "BOJ Catalog", category: "Custom", width: 2048, height: 2048, safeX: 12, safeY: 12, background: "#EFEFEF", align: "center", fit: "Fit" },
-  { id: "my-brand", label: "My Brand Preset", category: "Custom", width: 1801, height: 2600, safeX: 16.66, safeY: 10, background: "#F1EDE7", align: "center", fit: "Fit" },
+  { id: "boj-catalog", label: "BOJ Catalog", category: "Custom", width: 2048, height: 2048, safeX: 12, safeY: 12, background: "#FFFFFF", align: "center", fit: "Fit" },
+  { id: "my-brand", label: "My Brand Preset", category: "Custom", width: 1801, height: 2600, safeX: 16.66, safeY: 10, background: "#FFFFFF", align: "center", fit: "Fit" },
 ];
 
 /** Custom presets live in app state, so callers pass their own list. */
