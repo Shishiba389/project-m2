@@ -36,7 +36,7 @@ export type Preset = {
 };
 
 export const PRESETS: Preset[] = [
-  { id: "zalando", label: "Zalando 9:13", category: "Marketplace", width: 1801, height: 2600, safeX: 16.66, safeY: 10, background: "#F6F6F6", align: "center", fit: "Fit" },
+  { id: "zalando", label: "Zalando 9:13", category: "Marketplace", width: 1801, height: 2600, safeX: 16.66, safeY: 10, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "amazon", label: "Amazon (1:1)", category: "Marketplace", width: 2000, height: 2000, safeX: 7.5, safeY: 7.5, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "douglas", label: "Douglas (1:1)", category: "Marketplace", width: 1500, height: 1500, safeX: 8, safeY: 8, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "shopee", label: "Shopee (1:1)", category: "Marketplace", width: 1600, height: 1600, safeX: 6, safeY: 6, background: "#FFFFFF", align: "center", fit: "Fit" },
@@ -46,7 +46,7 @@ export const PRESETS: Preset[] = [
   { id: "ig-story", label: "Instagram Story (9:16)", category: "Social Media", width: 1080, height: 1920, safeX: 8, safeY: 14, background: "#111111", align: "center", fit: "Fit" },
   { id: "tiktok", label: "TikTok (9:16)", category: "Social Media", width: 1080, height: 1920, safeX: 8, safeY: 16, background: "#111111", align: "center", fit: "Fit" },
   { id: "facebook", label: "Facebook (1:1)", category: "Social Media", width: 1200, height: 1200, safeX: 6, safeY: 6, background: "#FFFFFF", align: "center", fit: "Fit" },
-  { id: "product-master", label: "Product Master", category: "Custom", width: 3000, height: 3000, safeX: 10, safeY: 10, background: "#F6F6F6", align: "center", fit: "Fit" },
+  { id: "product-master", label: "Product Master", category: "Custom", width: 3000, height: 3000, safeX: 10, safeY: 10, background: "#FFFFFF", align: "center", fit: "Fit" },
   { id: "boj-catalog", label: "BOJ Catalog", category: "Custom", width: 2048, height: 2048, safeX: 12, safeY: 12, background: "#EFEFEF", align: "center", fit: "Fit" },
   { id: "my-brand", label: "My Brand Preset", category: "Custom", width: 1801, height: 2600, safeX: 16.66, safeY: 10, background: "#F1EDE7", align: "center", fit: "Fit" },
 ];

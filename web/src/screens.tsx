@@ -310,7 +310,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   </div>;
 
   return <div className={`content-pane editor-pane ${focusMode ? "focus-editor-pane" : ""}`}>
-    <div className="editor-stage"
+    <div className="editor-stage" style={{ background: doc.background }}
       onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDropActive(true); }}
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDropActive(false); }}
       onDrop={(event) => { event.preventDefault(); setDropActive(false); if (event.dataTransfer.files.length) onDrop(event.dataTransfer.files); }}>
