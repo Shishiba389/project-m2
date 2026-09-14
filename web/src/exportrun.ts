@@ -80,7 +80,7 @@ export const encodableFormat = (format: Format): OutFormat =>
 /* ------------------------------------------------------------------ browser */
 
 export async function renderFramed(file: File, spec: FrameSpec, format: OutFormat, quality: number,
-  metadata: { dpi?: number; maxBytes?: number | null } = {}): Promise<Uint8Array> {
+  metadata: { dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" } = {}): Promise<Uint8Array> {
   const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   try {
     const sourceCanvas = document.createElement("canvas");
@@ -93,7 +93,7 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
     const canvas = document.createElement("canvas");
     canvas.width = spec.width;
     canvas.height = spec.height;
-    const context = canvas.getContext("2d");
+    const context = canvas.getContext("2d", { colorSpace: metadata.profile === "display-p3" ? "display-p3" : "srgb" } as CanvasRenderingContext2DSettings);
     if (!context) throw new Error("2D canvas is unavailable");
 
     if (spec.background !== "transparent" || format === "jpg") {
@@ -154,7 +154,7 @@ export const EXPORT_ZIP = "minima-export.zip";
 export async function runExport(
   queue: Asset[],
   spec: FrameSpec,
-  naming: { format: Format; quality: number; suffix: string; keepName: boolean; dpi?: number; maxBytes?: number | null },
+  naming: { format: Format; quality: number; suffix: string; keepName: boolean; customNames?: Record<number, string>; dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" },
   onProgress: (progress: ExportProgress) => void,
   shouldStop: () => boolean = () => false,
 ): Promise<{ zip: Uint8Array; progress: ExportProgress; stopped: boolean }> {
@@ -171,7 +171,8 @@ export async function runExport(
       if (!asset.file) throw new Error("no source file");
       const assetSpec = asset.layout ? { ...spec, box: asset.layout.frame } : spec;
       const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
-      let name = outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
+      const custom = naming.customNames?.[asset.id]?.trim();
+      let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
       let n = 2;
       while (taken.has(name.toLowerCase())) {
         const dot = name.lastIndexOf(".");

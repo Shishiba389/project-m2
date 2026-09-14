@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Download, Package, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -12,15 +12,17 @@ import { megabytes, outputName, type Asset, type Format, type Preset } from "@/s
 export type ExportOptions = {
   format: Format;
   quality: number;
-  profile: string;
+  profile: "srgb" | "display-p3" | "rec709";
   keepName: boolean;
   suffix: string;
   dpi: number;
   maxBytes: number | null;
+  selectedIds: number[];
+  customNames: Record<number, string>;
 };
 
 export const defaultExportOptions: ExportOptions = {
-  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null,
+  format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null, selectedIds: [], customNames: {},
 };
 
 export const SHORTCUTS: [string, string][] = [
@@ -41,7 +43,10 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
   open: boolean; onOpenChange: (value: boolean) => void; queue: Asset[];
   options: ExportOptions; canvas: string; onOptions: (next: ExportOptions) => void; onStart: () => void;
 }) {
-  const estimate = queue.reduce((total, asset) => total + megabytes(asset), 0) * (options.format === "png" ? 1 : options.quality / 100);
+  const [sizeUnit, setSizeUnit] = useState<"KB" | "MB">("MB");
+  const selected = useMemo(() => new Set(options.selectedIds.length ? options.selectedIds : queue.map((asset) => asset.id)), [options.selectedIds, queue]);
+  const selectedQueue = queue.filter((asset) => selected.has(asset.id));
+  const estimate = selectedQueue.reduce((total, asset) => total + megabytes(asset), 0) * (options.format === "png" ? 1 : options.quality / 100);
   const missing = queue.filter((asset) => !asset.file).length;
 
   return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className="export-dialog">
@@ -62,17 +67,18 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
         <div className="slider-label"><span>Quality</span><strong>{options.format === "png" ? "lossless" : `${options.quality}%`}</strong></div>
         <Slider value={[options.quality]} onValueChange={([value]) => onOptions({ ...options, quality: value })} disabled={options.format === "png"} />
         <label className="field-label">Color profile</label>
-        <Select value={options.profile} onValueChange={(value) => onOptions({ ...options, profile: value })}>
+        <Select value={options.profile} onValueChange={(value) => onOptions({ ...options, profile: value as ExportOptions["profile"] })}>
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent><SelectItem value="srgb">sRGB (browser output)</SelectItem></SelectContent>
+          <SelectContent><SelectItem value="srgb">sRGB</SelectItem><SelectItem value="display-p3">Display P3</SelectItem><SelectItem value="rec709">Rec.709 / sRGB</SelectItem></SelectContent>
         </Select>
         <label className="field-label" htmlFor="dpi">DPI metadata</label>
         <input id="dpi" className="export-input" type="number" min={1} max={2400} value={options.dpi}
           onChange={(event) => onOptions({ ...options, dpi: Number(event.target.value) })} />
-        <label className="field-label" htmlFor="max-size">Maximum file size (KB, optional)</label>
-        <input id="max-size" className="export-input" type="number" min={1} placeholder="No limit"
-          value={options.maxBytes ? Math.round(options.maxBytes / 1024) : ""}
-          onChange={(event) => onOptions({ ...options, maxBytes: event.target.value ? Number(event.target.value) * 1024 : null })} />
+        <label className="field-label" htmlFor="max-size">Maximum file size (optional)</label>
+        <div className="size-limit-row"><input id="max-size" className="export-input" type="number" min={1} placeholder="No limit"
+          value={options.maxBytes ? (sizeUnit === "MB" ? (options.maxBytes / 1048576).toFixed(2) : Math.round(options.maxBytes / 1024)) : ""}
+          onChange={(event) => onOptions({ ...options, maxBytes: event.target.value ? Number(event.target.value) * (sizeUnit === "MB" ? 1048576 : 1024) : null })} />
+          <div className="format-chips size-units"><button className={sizeUnit === "KB" ? "active" : ""} onClick={() => setSizeUnit("KB")}>KB</button><button className={sizeUnit === "MB" ? "active" : ""} onClick={() => setSizeUnit("MB")}>MB</button></div></div>
         <label className="check-row">
           <Checkbox checked={options.keepName} onCheckedChange={(value) => onOptions({ ...options, keepName: Boolean(value) })} />
           Keep original filename
@@ -86,16 +92,23 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
         </p>
       </section>
       <section className="export-list">
-        <strong>{queue.length} files · estimated {estimate.toFixed(1)} MB</strong>
+        <div className="export-batch-head"><strong>{selectedQueue.length} of {queue.length} files · estimated {estimate.toFixed(1)} MB</strong>
+          <Button variant="ghost" size="sm" onClick={() => onOptions({ ...options, selectedIds: [] })}>Select all</Button></div>
         {missing > 0 && <p className="export-warning"><TriangleAlert size={12} /> {missing} without a source file will be skipped</p>}
         {options.format === "tiff" && <p className="export-warning"><TriangleAlert size={12} /> TIFF cannot be encoded in a browser; PNG is written instead</p>}
-        {queue.slice(0, 7).map((asset) => <div key={asset.id}><Thumb asset={asset} /><span>{outputName(asset, options.format, options.suffix, options.keepName)}</span></div>)}
-        {queue.length > 7 && <span className="export-more">+{queue.length - 7} more</span>}
+        <div className="export-rename-list">{queue.map((asset) => <label key={asset.id} className="export-rename-row">
+          <Checkbox checked={selected.has(asset.id)} onCheckedChange={(value) => {
+            const next = new Set(selected); if (value) next.add(asset.id); else next.delete(asset.id);
+            onOptions({ ...options, selectedIds: Array.from(next) });
+          }} />
+          <Thumb asset={asset} /><input aria-label={`Export name for ${asset.name}`} value={options.customNames[asset.id] ?? ""} placeholder={outputName(asset, options.format, options.suffix, options.keepName).replace(/\.[^/.]+$/, "")}
+            onChange={(event) => onOptions({ ...options, customNames: { ...options.customNames, [asset.id]: event.target.value } })} /><span className="export-extension">.{options.format === "tiff" ? "png" : options.format}</span>
+        </label>)}</div>
       </section>
     </div>
     <DialogFooter>
       <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-      <Button disabled={!queue.length} onClick={onStart}><Download /> Export and download</Button>
+      <Button disabled={!selectedQueue.length} onClick={onStart}><Download /> Export selected batch</Button>
     </DialogFooter>
   </DialogContent></Dialog>;
 }

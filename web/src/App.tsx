@@ -101,6 +101,9 @@ export function MinimaWorkspace() {
   const counts = useMemo(() => countByStatus(assets, target), [assets, target]);
   const needsAttention = counts.Warning + counts.Error;
   const exportQueue = useMemo(() => assets.filter((asset) => statusOf(asset, target) !== "Pending"), [assets, target]);
+  const selectedExportQueue = useMemo(() => exportOptions.selectedIds.length
+    ? exportQueue.filter((asset) => exportOptions.selectedIds.includes(asset.id))
+    : exportQueue, [exportOptions.selectedIds, exportQueue]);
   const visible = useMemo(() => filterAssets(assets, target, filter), [assets, target, filter]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const scoped = useMemo(() => scope === "all" ? assets : scope === "selected" ? assets.filter((asset) => selectedSet.has(asset.id)) : assets.filter((asset) => asset.id === activeId), [assets, scope, selectedSet, activeId]);
@@ -275,12 +278,12 @@ export function MinimaWorkspace() {
    * only honest output.
    */
   const startExport = useCallback(async () => {
-    if (!exportQueue.length) return;
+    if (!selectedExportQueue.length) return;
     cancelExport.current = false;
     setExportOpen(false);
     setRunDone(false);
-    setRun({ done: 0, total: exportQueue.length, current: "", failed: [] });
-    const result = await runExport(exportQueue, specFromDoc(doc), exportOptions,
+    setRun({ done: 0, total: selectedExportQueue.length, current: "", failed: [] });
+    const result = await runExport(selectedExportQueue, specFromDoc(doc), exportOptions,
       (progress) => setRun(progress),
       () => cancelExport.current);
     exportZip.current = result.zip;
@@ -289,7 +292,7 @@ export function MinimaWorkspace() {
     setRunDone(true);
     if (result.progress.done > result.progress.failed.length) downloadZip(result.zip, EXPORT_ZIP);
     touch(`Exported ${result.progress.done - result.progress.failed.length} image(s)`);
-  }, [doc, exportOptions, exportQueue, touch]);
+  }, [doc, exportOptions, selectedExportQueue, touch]);
 
   useEffect(() => {
     if (!assets.length && !["batch", "editor", "presets", "settings"].includes(screen)) goto("import");
@@ -384,6 +387,7 @@ export function MinimaWorkspace() {
 
   const back = backTarget(screen, assets.length > 0);
   const onImages = ["gallery", "editor", "review"].includes(screen);
+  const showImageChrome = onImages;
   const zoomEnabled = screen === "editor" || screen === "gallery";
   const title = screen === "editor" && hasActive ? active.name
     : screen === "settings" ? "Settings"
@@ -412,13 +416,15 @@ export function MinimaWorkspace() {
               {view === "split" ? "Split" : view[0].toUpperCase() + view.slice(1)}
             </button>)}
         </div>}
-        <div className="zoom-control" role="group" aria-label={screen === "editor" ? "Canvas zoom" : "Thumbnail size"}>
-          <button aria-label="Zoom out" disabled={!zoomEnabled} onClick={() => setZoom((value) => Math.max(25, value - 25))}><Minus size={14} /></button>
-          <span>{zoom}%</span>
-          <button aria-label="Zoom in" disabled={!zoomEnabled} onClick={() => setZoom((value) => Math.min(400, value + 25))}><Plus size={14} /></button>
-        </div>
-        <Button variant="ghost" size="icon" aria-label="Toggle inspector" aria-pressed={inspectorOpen} onClick={() => setInspectorOpen((value) => !value)}><PanelRight /></Button>
-        <Button variant="ghost" size="icon" aria-label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)}><CircleHelp /></Button>
+        {showImageChrome && <>
+          <div className="zoom-control" role="group" aria-label={screen === "editor" ? "Canvas zoom" : "Thumbnail size"}>
+            <button aria-label="Zoom out" disabled={!zoomEnabled} onClick={() => setZoom((value) => Math.max(25, value - 25))}><Minus size={14} /></button>
+            <span>{zoom}%</span>
+            <button aria-label="Zoom in" disabled={!zoomEnabled} onClick={() => setZoom((value) => Math.min(400, value + 25))}><Plus size={14} /></button>
+          </div>
+          <Button variant="ghost" size="icon" aria-label="Toggle inspector" aria-pressed={inspectorOpen} onClick={() => setInspectorOpen((value) => !value)}><PanelRight /></Button>
+          <Button variant="ghost" size="icon" aria-label="Keyboard shortcuts" onClick={() => setShortcutsOpen(true)}><CircleHelp /></Button>
+        </>}
       </div>
     </header>
 
@@ -491,7 +497,7 @@ export function MinimaWorkspace() {
 
     <ExportDialog open={exportOpen} onOpenChange={setExportOpen} queue={exportQueue} options={exportOptions}
       canvas={`${doc.width} × ${doc.height} px`} onOptions={setExportOptions} onStart={startExport} />
-    <ExportProgress run={run} done={runDone} bytes={runBytes} queue={exportQueue} options={exportOptions}
+    <ExportProgress run={run} done={runDone} bytes={runBytes} queue={selectedExportQueue} options={exportOptions}
       onCancel={() => { cancelExport.current = true; }}
       onAgain={() => exportZip.current && downloadZip(exportZip.current, EXPORT_ZIP)}
       onClose={() => { cancelExport.current = true; setRun(null); }} />
