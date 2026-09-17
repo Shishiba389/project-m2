@@ -391,12 +391,14 @@ export function MinimaWorkspace() {
         <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
       </div>
       <div className="focus-tools" role="toolbar" aria-label="Focus canvas tools">
-        {(["image", "crop", "canvas"] as const).map((tool) => <button key={tool} className={focusTool === tool ? "active" : ""}
-          aria-pressed={focusTool === tool} onClick={() => setFocusTool(tool)}>{tool[0].toUpperCase() + tool.slice(1)}</button>)}
+        <button className={focusTool === "image" ? "active" : ""} aria-pressed={focusTool === "image"} onClick={() => setFocusTool("image")}>Edit image</button>
+        <button onClick={() => filesInput.current?.click()}>Replace</button>
+        <button className={focusTool === "crop" ? "active" : ""} aria-pressed={focusTool === "crop"} onClick={() => setFocusTool("crop")}>Crop</button>
+        <button className={focusTool === "canvas" ? "active" : ""} aria-pressed={focusTool === "canvas"} onClick={() => setFocusTool("canvas")}>Position</button>
         {focusTool === "image" && (["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
           aria-pressed={doc.fit === fit} onClick={() => setDoc((current) => ({ ...current, fit }))}>{fit}</button>)}
         {focusTool === "image" && <><button onClick={() => setActivePlacement({ ...(active.placement ?? { x: 0, y: 0, scale: 1 }), scale: (active.placement?.scale ?? 1) / 1.1 })}>−</button><button onClick={() => setActivePlacement({ ...(active.placement ?? { x: 0, y: 0, scale: 1 }), scale: (active.placement?.scale ?? 1) * 1.1 })}>+</button><button onClick={() => setActivePlacement({ x: 0, y: 0, scale: 1 })}>Reset image</button></>}
-        {focusTool === "crop" && <button onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Fill canvas</button>}
+        {focusTool === "crop" && <><button onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Reset crop</button><button onClick={() => setFocusTool("image")}>Done</button></>}
         {focusTool === "canvas" && <button aria-pressed={guides.grid} onClick={() => setGuides((current) => ({ ...current, grid: !current.grid }))}>Grid</button>}
       </div>
       <Button variant="secondary" size="sm" onClick={() => { setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>

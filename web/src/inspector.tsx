@@ -71,21 +71,21 @@ export function Inspector({
       </label>
       <label className="check-row template-lock-row">
         <Checkbox checked={Boolean(doc.templateLocked)} onCheckedChange={(value) => onDoc((current) => ({ ...current, templateLocked: Boolean(value) }))} />
-        Lock frame layout
+        Lock crop layout
       </label>
       {doc.templateLocked && <p className="inspector-note">Frame is locked. Import, fit and export remain available.</p>}
 
-      <label className="field-label">How the image fills the frame</label>
+      <label className="field-label">How the image fits the page</label>
       <div className="segmented">{(["Fit", "Fill", "Stretch"] as const).map((mode) =>
         <button key={mode} className={doc.fit === mode ? "active" : ""} onClick={() => patchDoc({ fit: mode })}>{mode}</button>)}
       </div>
 
       {/* The placeholder frame: nine anchors, numeric margins, and one button
           to take it to the canvas edges. Every image in the queue uses it. */}
-      <label className="field-label">Placeholder frame</label>
+      <label className="field-label">Crop mask</label>
       <div className="frame-actions">
-        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: fullBox() }))}>Fill canvas</button>
-        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: safeBox(current.safeX, current.safeY) }))}>Safe area</button>
+        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: fullBox() }))}>Reset crop</button>
+        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: safeBox(current.safeX, current.safeY) }))}>Crop to safe area</button>
       </div>
       <div className="margin-grid">
         {([["top", "Top"], ["right", "Right"], ["bottom", "Bottom"], ["left", "Left"]] as [keyof Margins, string][])

@@ -228,7 +228,7 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
 
 /* -------------------------------------------------------------------- editor */
 
-export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onPlacement, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false, editMode = "crop" }: {
+export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onPlacement, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false, editMode = "image" }: {
   asset: Asset; assets: Asset[]; selected: number[]; doc: Doc; zoom: number;
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
   onBox: (box: Box) => void; onPlacement: (placement: ImagePlacement) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
@@ -237,6 +237,8 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   focusMode?: boolean;
   editMode?: "image" | "crop" | "canvas";
 }) {
+  const [normalMode, setNormalMode] = useState<"image" | "crop" | "canvas">("image");
+  const activeMode = focusMode ? editMode : normalMode;
   const canvasRef = useRef<HTMLDivElement>(null);
   const activeThumb = useRef<HTMLButtonElement>(null);
   const activeIndex = assets.findIndex((item) => item.id === asset.id);
@@ -290,7 +292,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   const resized = <div ref={canvasRef} className="canvas" style={canvasStyle}>
     {guides.grid && <div className="canvas-grid" aria-hidden="true" />}
     <div className="safe-area" style={{ inset: `${doc.safeY}% ${doc.safeX}%` }} />
-    <div className={`frame ${editMode === "crop" ? "frame-editing" : ""}`} tabIndex={editMode === "crop" ? 0 : -1} style={frameStyle}
+    <div className={`frame ${activeMode === "crop" ? "frame-editing" : ""}`} tabIndex={activeMode === "crop" ? 0 : -1} style={frameStyle}
       aria-label={`Placeholder frame for ${asset.name}. Drag to move, arrow keys to nudge, handles to resize.`}
       onKeyDown={(event) => {
         const amount = event.shiftKey ? 5 : 0.5;
@@ -300,16 +302,16 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
         if (event.key === "ArrowDown") { event.preventDefault(); nudge(0, amount); }
       }}
       onDoubleClick={() => onFit("Fill")}
-      {...(editMode === "crop" ? dragProps("move") : {})}>
-      <div className={`image-layer ${editMode === "image" ? "image-editing" : ""}`} style={{ transform: `translate(${placement.x / doc.box.w * 100}%, ${placement.y / doc.box.h * 100}%) scale(${placement.scale})` }}
-        onPointerDown={(event) => { if (editMode !== "image") return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); imageDrag.current = { x: event.clientX, y: event.clientY, placement }; }}
-        onPointerMove={(event) => { const state = imageDrag.current; const rect = canvasRef.current?.getBoundingClientRect(); if (!state || !rect || editMode !== "image") return; placeImage({ ...state.placement, x: state.placement.x + (event.clientX - state.x) / rect.width * 100, y: state.placement.y + (event.clientY - state.y) / rect.height * 100 }); }}
+      {...(activeMode === "crop" ? dragProps("move") : {})}>
+      <div className={`image-layer ${activeMode === "image" ? "image-editing" : ""}`} style={{ transform: `translate(${placement.x / doc.box.w * 100}%, ${placement.y / doc.box.h * 100}%) scale(${placement.scale})` }}
+        onPointerDown={(event) => { if (activeMode !== "image") return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); imageDrag.current = { x: event.clientX, y: event.clientY, placement }; }}
+        onPointerMove={(event) => { const state = imageDrag.current; const rect = canvasRef.current?.getBoundingClientRect(); if (!state || !rect || activeMode !== "image") return; placeImage({ ...state.placement, x: state.placement.x + (event.clientX - state.x) / rect.width * 100, y: state.placement.y + (event.clientY - state.y) / rect.height * 100 }); }}
         onPointerUp={() => { imageDrag.current = null; }} onPointerCancel={() => { imageDrag.current = null; }}
-        onWheel={(event) => { if (editMode !== "image") return; event.preventDefault(); placeImage({ ...placement, scale: placement.scale * (event.deltaY < 0 ? 1.08 : 0.92) }); }}>
+        onWheel={(event) => { if (activeMode !== "image") return; event.preventDefault(); placeImage({ ...placement, scale: placement.scale * (event.deltaY < 0 ? 1.08 : 0.92) }); }}>
         <AssetImage asset={asset} fit={objectFitFor(doc.fit)} large />
       </div>
-      {editMode === "crop" && <div className="frame-outline" aria-hidden="true" />}
-      {editMode === "crop" && HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={-1}
+      {activeMode === "crop" && <div className="frame-outline" aria-hidden="true" />}
+      {activeMode === "crop" && HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={-1}
         aria-label={`Resize ${handle}`} aria-valuenow={Math.round(doc.box.w)}
         className={`frame-handle handle-${handle}`} {...dragProps(handle)} />)}
     </div>
@@ -324,7 +326,15 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
       onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDropActive(true); }}
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDropActive(false); }}
       onDrop={(event) => { event.preventDefault(); setDropActive(false); if (event.dataTransfer.files.length) onDrop(event.dataTransfer.files); }}>
-      {!focusMode && !assets.length && <div className="editor-toolbar" aria-label="Editor canvas tools">
+      {!focusMode && <div className="editor-toolbar" aria-label="Selected image toolbar">
+        {assets.length > 0 && <div className="editor-toolbar-group" role="toolbar" aria-label="Selected image actions">
+          <button className={normalMode === "image" ? "active" : ""} aria-pressed={normalMode === "image"} onClick={() => setNormalMode("image")}>Edit image</button>
+          <button onClick={onImport}>Replace</button>
+          <button className={normalMode === "crop" ? "active" : ""} aria-pressed={normalMode === "crop"} onClick={() => setNormalMode("crop")}>Crop</button>
+          <button className={normalMode === "canvas" ? "active" : ""} aria-pressed={normalMode === "canvas"} onClick={() => setNormalMode("canvas")}>Position</button>
+        </div>}
+        {assets.length > 0 && normalMode === "image" && <div className="editor-toolbar-group"><button onClick={() => placeImage({ ...placement, scale: placement.scale / 1.1 })}>−</button><button onClick={() => placeImage({ ...placement, scale: placement.scale * 1.1 })}>+</button><button onClick={() => placeImage({ x: 0, y: 0, scale: 1 })}>Reset</button></div>}
+        {assets.length > 0 && normalMode === "crop" && <div className="editor-toolbar-group"><button onClick={() => onBox({ x: 0, y: 0, w: 100, h: 100 })}>Reset crop</button><button onClick={() => setNormalMode("image")}>Done</button></div>}
         <Button size="sm" variant="secondary" onClick={onImport}><Upload /> Import images</Button>
         <div className="editor-toolbar-group" role="group" aria-label="Image fill mode">
           {(["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}

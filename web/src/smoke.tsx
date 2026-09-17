@@ -80,7 +80,7 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
 check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onBox={noop} onPlacement={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
-  "frame-handle", "handle-nw", "handle-se", "handle-n", "handle-e", "filmstrip", "canvas-grid");
+  "image-layer", "editor-toolbar", "Edit image", "Crop", "filmstrip", "canvas-grid");
 
 check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
@@ -103,7 +103,7 @@ check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} preset
   onClose={noop} onResetGuides={noop} />,
   "Resize Inspector", "Alignment matrix", "Flip H", "Guides", "Snap safe", "Canvas background",
   "Overlay opacity", "Apply resize to", "Apply to 3 images",
-  "Placeholder frame", "Fill canvas", "Safe area", "Top", "Right", "Bottom", "Left");
+  "Crop mask", "Reset crop", "Crop to safe area", "Top", "Right", "Bottom", "Left");
 
 check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} canvas="1801 × 2600 px" onOptions={noop} onStart={noop} />);
 

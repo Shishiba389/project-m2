@@ -819,6 +819,8 @@ body { background: var(--app); }
 /* A violet selection reads as "chosen" against the light artboard in either
    theme, and matches the design system's primary. */
 .frame { --frame-line: #374151 }
+.frame:not(.frame-editing) { overflow:visible }
+.frame:not(.frame-editing) .image-layer { outline:1.5px solid #7c3aed; outline-offset:0 }
 .frame-outline {
   position: absolute; inset: 0; pointer-events: none;
   border: 1.5px solid var(--frame-line);

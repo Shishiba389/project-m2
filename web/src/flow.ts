@@ -460,7 +460,8 @@ export function docFromPreset(preset: Preset): Doc {
     ratio: preset.width / preset.height,
     fit: preset.fit, align: preset.align, safeX: preset.safeX, safeY: preset.safeY,
     background: preset.background, flipH: false, flipV: false,
-    box: safeBox(preset.safeX, preset.safeY),
+    // Safe area remains a guide; the default image element fills the page.
+    box: fullBox(),
   };
 }
 
@@ -620,7 +621,7 @@ export function demo() {
   console.assert(fullBox().w === 100 && fullBox().x === 0, "the full frame spans the canvas");
   console.assert(HANDLES.length === 8, "eight handles, not four");
   console.assert(safeBox(10, 5).x === 10 && safeBox(10, 5).w === 80, "a preset frame is its safe area");
-  console.assert(docFromPreset(zalando).box.w === 100 - 2 * zalando.safeX, "a loaded preset frames its safe area");
+  console.assert(docFromPreset(zalando).box.w === 100, "a loaded preset begins with a full-page image element");
 
   // Snapping only bites near a target, and only for the guides that are on.
   console.assert(snapBox({ x: 10.5, y: 50, w: 40, h: 40 }, 10, 5).x === 10, "near edge snaps");
