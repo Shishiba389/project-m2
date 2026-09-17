@@ -251,12 +251,26 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   const splitRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ mode: "move" | Handle; x: number; y: number; box: Box } | null>(null);
   const imageDrag = useRef<{ x: number; y: number; placement: ImagePlacement } | null>(null);
+  const imageResize = useRef<{ handle: Handle; x: number; y: number; placement: ImagePlacement } | null>(null);
   const [dropActive, setDropActive] = useState(false);
 
   const place = (box: Box) => onBox(clampBox(snapBox(box, doc.safeX, doc.safeY, { safe: guides.snapSafe, grid: guides.snapGrid })));
   const nudge = (dx: number, dy: number) => place({ ...doc.box, x: doc.box.x + dx, y: doc.box.y + dy });
   const placement = asset.placement ?? { x: 0, y: 0, scale: 1 };
   const placeImage = (next: ImagePlacement) => onPlacement({ x: next.x, y: next.y, scale: Math.min(5, Math.max(0.2, next.scale)) });
+  const resizeImage = (event: React.PointerEvent) => {
+    const state = imageResize.current; const rect = canvasRef.current?.getBoundingClientRect();
+    if (!state || !rect) return;
+    const dx = (event.clientX - state.x) / rect.width;
+    const dy = (event.clientY - state.y) / rect.height;
+    const sx = state.handle.includes("e") ? 1 : state.handle.includes("w") ? -1 : 0;
+    const sy = state.handle.includes("s") ? 1 : state.handle.includes("n") ? -1 : 0;
+    const changes = [sx ? sx * dx : null, sy ? sy * dy : null].filter((value): value is number => value !== null);
+    const delta = changes.reduce((sum, value) => sum + value, 0) / changes.length;
+    const scale = Math.min(5, Math.max(0.2, state.placement.scale + delta));
+    const growth = (scale - state.placement.scale) * 50;
+    placeImage({ scale, x: state.placement.x + sx * growth, y: state.placement.y + sy * growth });
+  };
 
   /**
    * Moving the frame and resizing it from a handle share one gesture: capture
@@ -309,6 +323,11 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
         onPointerUp={() => { imageDrag.current = null; }} onPointerCancel={() => { imageDrag.current = null; }}
         onWheel={(event) => { if (activeMode !== "image") return; event.preventDefault(); placeImage({ ...placement, scale: placement.scale * (event.deltaY < 0 ? 1.08 : 0.92) }); }}>
         <AssetImage asset={asset} fit={objectFitFor(doc.fit)} large />
+        {activeMode === "image" && HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={0}
+          aria-label={`Resize image ${handle}`} className={`frame-handle image-handle handle-${handle}`}
+          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); imageResize.current = { handle, x: event.clientX, y: event.clientY, placement }; }}
+          onPointerMove={resizeImage} onPointerUp={() => { imageResize.current = null; }} onPointerCancel={() => { imageResize.current = null; }}
+          onKeyDown={(event) => { const amount = event.shiftKey ? 0.1 : 0.02; if (["ArrowLeft", "ArrowDown"].includes(event.key)) { event.preventDefault(); placeImage({ ...placement, scale: placement.scale - amount }); } if (["ArrowRight", "ArrowUp"].includes(event.key)) { event.preventDefault(); placeImage({ ...placement, scale: placement.scale + amount }); } }} />)}
       </div>
       {activeMode === "crop" && <div className="frame-outline" aria-hidden="true" />}
       {activeMode === "crop" && HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={-1}
