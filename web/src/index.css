@@ -939,3 +939,64 @@ body { background: var(--app); }
 .focus-editor-host .editor-stage .canvas,.focus-editor-host .editor-stage .canvas-scene{max-height:calc(100dvh - 150px)}
 .editor-drop-overlay{position:absolute;inset:12%;z-index:20;display:grid;place-content:center;justify-items:center;gap:8px;border:2px dashed var(--accent);border-radius:12px;background:#171717d9;color:var(--ink-2);pointer-events:none;text-align:center}.editor-drop-overlay svg{width:28px;height:28px}.editor-drop-overlay span{font-size:11px;color:var(--ink-6)}
 @media (max-width:760px){.focus-toolbar{gap:5px;padding:7px 8px}.focus-contextual-toolbar{order:3;max-width:100%;width:100%}.focus-toolbar .focus-title{font-size:11px}.focus-toolbar .focus-title span{display:none}.focus-editor-host .editor-stage{padding:12px 8px 22px}}
+
+/* ------------------------------------------------------------------ frames */
+/* A frame is a container that clips one image. It renders inside the page
+   clip, so a frame hanging off the canvas is cut exactly like the page is. */
+.frame-layer { position:absolute; overflow:hidden; transform-origin:center }
+.frame-content { position:absolute; transform-origin:center }
+.frame-content .asset-image, .frame-content .crop-viewport { width:100%; height:100% }
+.frame-placeholder {
+  position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+  border:1.5px dashed color-mix(in srgb, var(--frame-line) 70%, transparent);
+  background:color-mix(in srgb, var(--frame-line) 7%, transparent);
+  color:var(--muted-foreground); font-size:12px; text-align:center;
+}
+.frame-placeholder svg { width:20px; height:20px; opacity:.7 }
+
+/* Selection chrome. Every selectable layer stays clickable even when its
+   pixels are white or fully transparent. */
+.layer-hit { position:absolute; z-index:1; padding:0; background:transparent; border:0; pointer-events:auto; cursor:pointer; transform-origin:center }
+.layer-hit:hover, .layer-hit:focus-visible { outline:1.5px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset:0 }
+.layer-hit.frame-hit.empty { outline:1.5px dashed color-mix(in srgb, var(--frame-line) 60%, transparent) }
+.frame-selection { position:absolute; z-index:3; pointer-events:auto; touch-action:none; cursor:grab; transform-origin:center }
+.frame-selection:active { cursor:grabbing }
+.frame-selection .frame-outline { border-color:var(--frame-line); box-shadow:0 0 0 1px rgba(255,255,255,.85) }
+.frame-selection:focus-visible { outline:2px solid var(--ring); outline-offset:2px }
+/* The overlay is pointer-transparent, so clearing a frame selection needs its
+   own target. It sits under every handle and layer hit-area. */
+.deselect-catcher { position:absolute; inset:0; z-index:0; pointer-events:auto }
+.frame-draft { position:absolute; z-index:3; border:1.5px dashed var(--frame-line); background:color-mix(in srgb, var(--frame-line) 10%, transparent) }
+.selection-overlay.frame-mode { pointer-events:auto; cursor:crosshair }
+
+/* The locator label names what is selected, so a blank layer is never a
+   mystery rectangle. */
+.layer-label {
+  position:absolute; left:0; top:-22px; z-index:4; padding:1px 7px; border-radius:99px;
+  background:var(--frame-line); color:#fff; font-size:11px; line-height:16px; white-space:nowrap; pointer-events:none;
+}
+/* Checkerboard behind a selected alpha-capable image: white on white is
+   otherwise invisible. Selection chrome never reaches the exported file. */
+.image-layer.needs-locator.image-editing::before {
+  content:""; position:absolute; inset:0; z-index:-1;
+  background-image:
+    linear-gradient(45deg, rgba(0,0,0,.09) 25%, transparent 25%, transparent 75%, rgba(0,0,0,.09) 75%),
+    linear-gradient(45deg, rgba(0,0,0,.09) 25%, transparent 25%, transparent 75%, rgba(0,0,0,.09) 75%);
+  background-size:16px 16px; background-position:0 0, 8px 8px; background-color:#fff;
+}
+
+/* Dragging framed content past its frame arms the detach, and says so. */
+.layer-label.detach-armed { background:#b45309 }
+
+/* Edit content: the frame stays put, the image shows whole, everything
+   outside the frame dims. */
+.content-edit { position:absolute; z-index:5; transform-origin:center; pointer-events:none }
+.content-edit-image { position:absolute; pointer-events:auto; touch-action:none; cursor:grab; transform-origin:center }
+.content-edit-image:active { cursor:grabbing }
+.content-edit-image .asset-image, .content-edit-image .crop-viewport { width:100%; height:100% }
+.content-edit-mask { position:absolute; inset:0; pointer-events:none; box-shadow:0 0 0 100vmax rgba(15,18,24,.55); outline:1.5px solid #fff }
+.frame-actions {
+  position:absolute; z-index:6; left:50%; bottom:12px; transform:translateX(-50%);
+  display:flex; gap:6px; padding:6px; border-radius:10px; pointer-events:auto;
+  background:var(--popover); border:1px solid var(--border); box-shadow:0 8px 24px rgba(0,0,0,.18);
+}

@@ -12,8 +12,9 @@
  */
 import { begin } from "@/src/selfcheck";
 import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
-import { outputName, type Asset, type Doc, type Format } from "@/src/flow";
-import { fullCrop, fullPageImage, type ImageElement } from "@/src/image-geometry";
+import { docFromPreset, outputName, presetById, type Asset, type Doc, type Format } from "@/src/flow";
+import { fullCrop, fullPageImage, type ImageBox, type ImageElement } from "@/src/image-geometry";
+import { attachImage, contentPageElement, createFrame } from "@/src/frame-geometry";
 import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
 
@@ -27,9 +28,54 @@ export type FrameSpec = {
   fit: "contain" | "cover" | "fill";
   align: { horizontal: "left" | "center" | "right"; vertical: "top" | "center" | "bottom" };
   element: ImageElement;
+  /** The page's layer stack, bottom to top, including the queued image. */
+  layers: Layer[];
+  /** The asset being exported, so its layer is drawn from the open bitmap. */
+  queuedAssetId?: number;
+  /**
+   * False when the queued image already appears in `layers`. It is only drawn
+   * from `element` when it is not a page layer at all — the batch case, where
+   * the image is the page's subject rather than one of several layers.
+   */
+  drawElement?: boolean;
 };
 
-export const specFromDoc = (doc: Doc): FrameSpec => ({
+/** One layer of the page: a free image, or a frame's content clipped by it. */
+export type Layer = {
+  /** Which asset this layer draws, so the queued one can reuse its bitmap. */
+  assetId: number;
+  element: ImageElement;
+  file: File;
+  clip?: ImageBox;
+  /**
+   * How the source maps into the element box. Frame content is always "fill":
+   * `contentFor` already sized the box to the source's ratio, which is what the
+   * preview draws. Free images follow the page's own fit setting.
+   */
+  fit?: FrameSpec["fit"];
+};
+
+/**
+ * The page's layer stack in the order the editor draws it: free images in
+ * their own order, then frames. Every layer says which asset it draws, so the
+ * exporter never has to guess where the image it is exporting belongs in the
+ * stack — it is simply one of these.
+ */
+export function pageLayers(doc: Doc, assets: Asset[]): Layer[] {
+  const frames = doc.frames ?? [];
+  const framed = new Set(frames.map((frame) => frame.imageId).filter((id): id is number => id !== null));
+  const free = assets.filter((asset) => asset.onCanvas && asset.file && !asset.corrupt && !framed.has(asset.id))
+    .map((asset) => ({ assetId: asset.id, element: asset.element, file: asset.file! }));
+  const inFrames = frames.flatMap((frame) => {
+    const asset = assets.find((item) => item.id === frame.imageId);
+    return asset?.file && !asset.corrupt && frame.content
+      ? [{ assetId: asset.id, element: contentPageElement(frame), file: asset.file, clip: frame.box, fit: "fill" as const }]
+      : [];
+  });
+  return [...free, ...inFrames];
+}
+
+export const specFromDoc = (doc: Doc, assets: Asset[] = []): FrameSpec => ({
   width: doc.width,
   height: doc.height,
   background: doc.background,
@@ -39,16 +85,29 @@ export const specFromDoc = (doc: Doc): FrameSpec => ({
     vertical: doc.align?.includes("top") ? "top" : doc.align?.includes("bottom") ? "bottom" : "center",
   },
   element: fullPageImage(),
+  layers: pageLayers(doc, assets),
+});
+
+/** A box in percentages of the page, as output pixels. */
+export const boxPx = (box: Pick<ImageBox, "x" | "y" | "w" | "h">, page: { width: number; height: number }): Rect => ({
+  x: (box.x / 100) * page.width, y: (box.y / 100) * page.height,
+  w: (box.w / 100) * page.width, h: (box.h / 100) * page.height,
 });
 
 /** An image element's destination box in output pixels. */
 export function framePx(spec: FrameSpec): Rect {
-  return {
-    x: (spec.element.box.x / 100) * spec.width,
-    y: (spec.element.box.y / 100) * spec.height,
-    w: (spec.element.box.w / 100) * spec.width,
-    h: (spec.element.box.h / 100) * spec.height,
-  };
+  return boxPx(spec.element.box, spec);
+}
+
+/** Rotation and flip about a box's centre, shared by images and frames. */
+function transformAboutCentre(context: CanvasRenderingContext2D, box: ImageBox, page: { width: number; height: number }) {
+  if (!box.flipH && !box.flipV && !box.rotation) return;
+  const cx = (box.x + box.w / 2) / 100 * page.width;
+  const cy = (box.y + box.h / 2) / 100 * page.height;
+  context.translate(cx, cy);
+  context.scale(box.flipH ? -1 : 1, box.flipV ? -1 : 1);
+  context.rotate(box.rotation * Math.PI / 180);
+  context.translate(-cx, -cy);
 }
 
 /**
@@ -102,43 +161,46 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
       context.fillRect(0, 0, spec.width, spec.height);
     }
 
-    const frame = framePx(spec);
     context.save();
-    // The output page is the crop boundary. The image element may freely sit
-    // outside it, just as it does in the editor.
+    // The output page is the crop boundary. An element may freely sit outside
+    // it, just as it does in the editor.
     context.beginPath();
     context.rect(0, 0, spec.width, spec.height);
     context.clip();
-    if (spec.element.box.flipH || spec.element.box.flipV || spec.element.box.rotation) {
-      const cx = (spec.element.box.x + spec.element.box.w / 2) / 100 * spec.width;
-      const cy = (spec.element.box.y + spec.element.box.h / 2) / 100 * spec.height;
-      context.translate(cx, cy);
-      context.scale(spec.element.box.flipH ? -1 : 1, spec.element.box.flipV ? -1 : 1);
-      context.rotate(spec.element.box.rotation * Math.PI / 180);
-      context.translate(-cx, -cy);
+    // Only the batch case draws from `element`: there the image is the page's
+    // subject, underneath whatever else the page holds.
+    if (spec.drawElement !== false) drawLayer(context, bitmap, sourceContext, spec, spec.element);
+    for (const layer of spec.layers) {
+      // The queued image is already decoded; every other layer needs its own.
+      const queued = layer.assetId === spec.queuedAssetId;
+      const source = queued ? bitmap : await createImageBitmap(layer.file, { imageOrientation: "from-image" });
+      try {
+        let layerContext = sourceContext;
+        if (!queued) {
+          const layerCanvas = document.createElement("canvas");
+          layerCanvas.width = source.width; layerCanvas.height = source.height;
+          const context2d = layerCanvas.getContext("2d", { willReadFrequently: true });
+          if (!context2d) throw new Error("2D canvas is unavailable");
+          context2d.drawImage(source, 0, 0);
+          layerContext = context2d;
+        }
+        context.save();
+        if (layer.clip) {
+          // Clip in the frame's own rotated space, then draw the content back
+          // in page space: a canvas clip is fixed once set.
+          transformAboutCentre(context, layer.clip, spec);
+          const rect = boxPx(layer.clip, spec);
+          context.beginPath();
+          context.rect(rect.x, rect.y, rect.w, rect.h);
+          context.clip();
+          context.setTransform(1, 0, 0, 1, 0, 0);
+        }
+        drawLayer(context, source, layerContext, spec, layer.element, layer.fit);
+        context.restore();
+      } finally {
+        if (!queued) source.close?.();
+      }
     }
-    const crop = spec.element.crop ?? fullCrop();
-    const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
-    const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
-    // This is the same object-fit calculation as the preview: fit the cropped
-    // source into the selected element box, then let the page clip the result.
-    const dest = fitInto(sourceWidth, sourceHeight, frame, spec.fit, spec.align);
-    const renderWidth = Math.max(1, Math.round(dest.w));
-    const renderHeight = Math.max(1, Math.round(dest.h));
-    validateDimensions(renderWidth, renderHeight);
-    const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, renderWidth, renderHeight);
-    if (peakBytes > MAX_RENDER_BYTES) throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory`);
-    const sourceX = Math.floor(crop.left * bitmap.width);
-    const sourceY = Math.floor(crop.top * bitmap.height);
-    const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
-    const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, renderWidth, renderHeight);
-    const resizedCanvas = document.createElement("canvas");
-    resizedCanvas.width = renderWidth;
-    resizedCanvas.height = renderHeight;
-    const imageData = resizedCanvas.getContext("2d")!.createImageData(renderWidth, renderHeight);
-    imageData.data.set(resized.data);
-    resizedCanvas.getContext("2d")!.putImageData(imageData, 0, 0);
-    context.drawImage(resizedCanvas, Math.round(dest.x), Math.round(dest.y));
     context.restore();
 
     return encodeOutput(canvas, {
@@ -148,6 +210,42 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
   } finally {
     bitmap.close?.();
   }
+}
+
+/** Draw one image element onto the page with the editor's own geometry. */
+function drawLayer(
+  context: CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  sourceContext: CanvasRenderingContext2D,
+  spec: FrameSpec,
+  element: ImageElement,
+  fit: FrameSpec["fit"] = spec.fit,
+) {
+  context.save();
+  transformAboutCentre(context, element.box, spec);
+  const crop = element.crop ?? fullCrop();
+  const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
+  const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
+  // This is the same object-fit calculation as the preview: fit the cropped
+  // source into the element box, then let the page or frame clip the result.
+  const dest = fitInto(sourceWidth, sourceHeight, boxPx(element.box, spec), fit, spec.align);
+  const renderWidth = Math.max(1, Math.round(dest.w));
+  const renderHeight = Math.max(1, Math.round(dest.h));
+  validateDimensions(renderWidth, renderHeight);
+  const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, renderWidth, renderHeight);
+  if (peakBytes > MAX_RENDER_BYTES) throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory`);
+  const sourceX = Math.floor(crop.left * bitmap.width);
+  const sourceY = Math.floor(crop.top * bitmap.height);
+  const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
+  const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, renderWidth, renderHeight);
+  const resizedCanvas = document.createElement("canvas");
+  resizedCanvas.width = renderWidth;
+  resizedCanvas.height = renderHeight;
+  const imageData = resizedCanvas.getContext("2d")!.createImageData(renderWidth, renderHeight);
+  imageData.data.set(resized.data);
+  resizedCanvas.getContext("2d")!.putImageData(imageData, 0, 0);
+  context.drawImage(resizedCanvas, Math.round(dest.x), Math.round(dest.y));
+  context.restore();
 }
 
 export type ExportProgress = {
@@ -182,7 +280,12 @@ export async function runExport(
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
       if (!asset.file) throw new Error("no source file");
-      const assetSpec = { ...spec, element: asset.element };
+      // The queued image is drawn exactly once, in its own place in the stack
+      // when it is a page layer, and from `element` when it is not.
+      const assetSpec = {
+        ...spec, element: asset.element, queuedAssetId: asset.id,
+        drawElement: !spec.layers.some((layer) => layer.assetId === asset.id),
+      };
       const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
       const custom = naming.customNames?.[asset.id]?.trim();
       let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
@@ -215,6 +318,7 @@ export function demo() {
     width: 1000, height: 2000, background: "#fff",
     fit: "contain", align: { horizontal: "center", vertical: "center" },
     element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 10, y: 20, w: 80, h: 60 } },
+    layers: [],
   };
 
   const frame = framePx(spec);
@@ -241,6 +345,36 @@ export function demo() {
   console.assert(encodableFormat("tiff") === "png", "TIFF falls back to PNG");
   console.assert(encodableFormat("jpg") === "jpg", "other formats pass through");
   console.assert(encodableFormat("webp") === "webp", "webp passes through");
+
+  // A frame's content exports through the same pixel geometry as the preview:
+  // the frame clips, the content keeps its place inside it.
+  const framedPage = { width: 1000, height: 1000 };
+  const testFrame = attachImage(createFrame({ x: 25, y: 25, w: 50, h: 50 }), 1, { w: 100, h: 100 }, framedPage);
+  const clipRect = boxPx(testFrame.box, framedPage);
+  console.assert(clipRect.x === 250 && clipRect.w === 500, "a frame clips to its own page rectangle");
+  const contentRect = boxPx(contentPageElement(testFrame).box, framedPage);
+  console.assert(contentRect.w === 500 && contentRect.h === 500, "a square image fills a square frame exactly");
+  const tall = attachImage(createFrame({ x: 0, y: 0, w: 50, h: 25 }), 1, { w: 100, h: 100 }, framedPage);
+  const tallRect = boxPx(contentPageElement(tall).box, framedPage);
+  console.assert(tallRect.h === 500 && tallRect.w === 500, "fill keeps the source square and overflows the frame");
+  console.assert(tallRect.y === -125, "and the overflow is centred, for the frame to clip");
+  console.assert(pageLayers({ ...docFromPreset(presetById("amazon")), frames: [testFrame] }, []).length === 0, "a frame without a decodable file exports nothing");
+  // The page preset is Fit, but the frame's content box already carries the
+  // source ratio: drawing it with anything but fill would letterbox it twice.
+  const fitPage = { ...docFromPreset(presetById("amazon")), frames: [testFrame] };
+  const withFile = pageLayers(fitPage, [{ id: 1, file: {} as File, element: fullPageImage(), src: { w: 100, h: 100 } } as Asset]);
+  console.assert(withFile.length === 1 && withFile[0].fit === "fill", "frame content exports with fill, whatever the page fit is");
+  console.assert(fitInto(100, 100, boxPx(contentPageElement(testFrame).box, framedPage), withFile[0].fit!).w === 500,
+    "so the content fills its box instead of shrinking inside it");
+
+  // Layer order is the page's order: free images as they are listed, frames on
+  // top, and the image being exported is simply one of them.
+  const freeAsset = { id: 2, file: {} as File, element: fullPageImage(), src: { w: 10, h: 10 }, onCanvas: true } as Asset;
+  const framedAsset = { id: 1, file: {} as File, element: fullPageImage(), src: { w: 100, h: 100 } } as Asset;
+  const stack = pageLayers(fitPage, [freeAsset, framedAsset]);
+  console.assert(stack.length === 2 && stack[0].assetId === 2 && stack[1].assetId === 1, "free images draw below frames");
+  console.assert(!stack[0].clip && Boolean(stack[1].clip), "and only the framed layer is clipped");
+  console.assert(pageLayers(fitPage, [{ ...freeAsset, corrupt: true }, framedAsset]).length === 1, "an unreadable source is not a layer");
 
   console.assert(specFromDoc({ fit: "Fill" } as Doc).fit === "cover", "Fill maps to cover");
   console.assert(specFromDoc({ fit: "Fit" } as Doc).fit === "contain", "Fit maps to contain");

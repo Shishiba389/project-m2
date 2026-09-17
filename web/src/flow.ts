@@ -10,6 +10,7 @@
 
 import { begin } from "@/src/selfcheck";
 import { fullPageImage, type ImageElement } from "@/src/image-geometry";
+import type { FrameElement } from "@/src/frame-geometry";
 import type { LayoutResult } from "@/src/editor-engine";
 
 export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
@@ -116,6 +117,11 @@ export type Asset = {
   fixed: boolean;
   /** Unreadable file; never resolvable by re-running the preset. */
   corrupt: boolean;
+  /**
+   * Measured at import: almost every pixel is transparent or white, so the
+   * layer is invisible against the page and needs a locator when selected.
+   */
+  faint?: boolean;
   /** Derived batch diagnostic; never used as editable or export geometry. */
   layout?: LayoutResult;
   /**
@@ -123,6 +129,12 @@ export type Asset = {
    * an element can sit wholly or partly outside the page.
    */
   element: ImageElement;
+  /**
+   * Set when this image is a free layer on the shared canvas rather than just
+   * the batch item the Gallery lists. The active asset always renders; these
+   * render alongside it.
+   */
+  onCanvas?: boolean;
 };
 
 /** Ratio drift above this reads as a real mismatch rather than rounding. */
@@ -217,7 +229,7 @@ export function outputName(asset: Asset, format: Format, suffix: string, keepNam
  */
 export function mergeImport(
   existing: Asset[],
-  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; thumbnailUrl?: string; corrupt?: boolean }[],
+  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; thumbnailUrl?: string; corrupt?: boolean; faint?: boolean }[],
   policy: DupPolicy,
 ): { assets: Asset[]; added: number; skipped: number; renamed: number } {
   const assets = [...existing];
@@ -241,6 +253,7 @@ export function mergeImport(
       overflow: false,
       fixed: false,
       corrupt: Boolean(file.corrupt),
+      faint: file.faint,
       element: fullPageImage(),
     };
     const clash = taken.has(file.name);
@@ -449,6 +462,8 @@ export type Doc = {
   background: string;
   /** Locks page settings while keeping image import and export available. */
   templateLocked?: boolean;
+  /** Frame containers on the canvas, bottom to top. Empty for a plain batch page. */
+  frames: FrameElement[];
 };
 
 export const srcRatio = (asset: Asset) => asset.src.w / asset.src.h;
@@ -459,7 +474,7 @@ export function docFromPreset(preset: Preset): Doc {
     presetId: preset.id, width: preset.width, height: preset.height, lock: true,
     ratio: preset.width / preset.height,
     fit: preset.fit, align: preset.align, safeX: preset.safeX, safeY: preset.safeY,
-    background: preset.background,
+    background: preset.background, frames: [],
   };
 }
 
@@ -500,6 +515,27 @@ export function backTarget(screen: Screen, hasAssets: boolean): Screen | null {
 }
 
 /* --------------------------------------------------------------------- demo */
+
+/* ----------------------------------------------------------------- history */
+
+/**
+ * Undo and redo run over two stacks — the document (canvas, frames) and the
+ * image elements — ordered by a shared sequence number. One step moves the
+ * stack holding the newer action, and both stacks when an action wrote to each
+ * of them (deleting a frame removes the frame and frees the image it held).
+ *
+ * `elementSeq` is null when the element stack is empty; `docSeq` is -1 for an
+ * empty document stack on undo, and Infinity on redo, so a missing stack never
+ * wins the comparison.
+ */
+export const undoTargets = (elementSeq: number | null, docSeq: number) => ({
+  document: elementSeq === null || elementSeq <= docSeq,
+  element: elementSeq !== null && elementSeq >= docSeq,
+});
+export const redoTargets = (elementSeq: number | null, docSeq: number) => ({
+  document: elementSeq === null || elementSeq >= docSeq,
+  element: elementSeq !== null && elementSeq <= docSeq,
+});
 
 export function demo() {
   const finish = begin();
@@ -641,6 +677,20 @@ export function demo() {
   console.assert(backTarget("batch", true) === "gallery", "batch backs out to the gallery");
   console.assert(backTarget("import", true) === null, "import is a root");
   console.assert(backTarget("gallery", true) === null, "gallery is a root, so Back is hidden rather than a no-op");
+
+  // One Ctrl+Z is one action: the newer stack moves, both move when an action
+  // wrote to each of them, and an empty stack never wins.
+  console.assert(undoTargets(7, 3).element && !undoTargets(7, 3).document, "a newer image edit undoes alone");
+  console.assert(undoTargets(3, 7).document && !undoTargets(3, 7).element, "a newer document edit undoes alone");
+  const paired = undoTargets(5, 5);
+  console.assert(paired.document && paired.element, "one action that wrote to both stacks undoes as one step");
+  console.assert(undoTargets(null, 4).document && !undoTargets(null, 4).element, "an empty element stack falls through to the document");
+  console.assert(undoTargets(4, -1).element && !undoTargets(4, -1).document, "an empty document stack falls through to the elements");
+  console.assert(redoTargets(7, 3).document && !redoTargets(7, 3).element, "redo takes the older entry first");
+  console.assert(redoTargets(3, 7).element && !redoTargets(3, 7).document, "and the older entry may be the image one");
+  const pairedRedo = redoTargets(5, 5);
+  console.assert(pairedRedo.document && pairedRedo.element, "a paired action redoes as one step too");
+  console.assert(redoTargets(4, Infinity).element && !redoTargets(4, Infinity).document, "an empty document future never wins redo");
 
   finish("flow.ts");
 }

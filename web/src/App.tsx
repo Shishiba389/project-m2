@@ -7,7 +7,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   CloudDialog, defaultExportOptions, ExportDialog, ExportProgress, PresetDialog, RemoveDialog,
-  ShortcutsDialog, type ExportOptions, type ExportWorkflow,
+  ReplaceFrameDialog, ShortcutsDialog, type ExportOptions, type ExportWorkflow,
 } from "@/src/dialogs";
 import {
   downloadZip, EXPORT_ZIP, runExport, specFromDoc, type ExportProgress as ExportRunProgress,
@@ -22,17 +22,27 @@ import {
 } from "@/src/screens";
 import {
   backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
-  megabytes, mergeImport, presetById, PRESETS, ratioLabel, statusOf,
+  megabytes, mergeImport, presetById, PRESETS, ratioLabel, redoTargets, statusOf, undoTargets,
   type Asset, type Doc, type DupPolicy, type GalleryFilter, type Preset, type Scope, type Screen,
 } from "@/src/flow";
 import { fullPageImage, resetCrop, type CropRect, type ImageElement } from "@/src/image-geometry";
+import {
+  attachImage, contentPageElement, createFrame, fillFrame, fitFrame, removeFrame, replaceFrame,
+  type FrameElement,
+} from "@/src/frame-geometry";
 
 const initialDoc = docFromPreset(presetById("zalando"));
 const EMPTY_EDITOR_ASSET: Asset = {
   id: 0, name: "Untitled canvas", kind: "shoe", format: "png", src: { w: 1, h: 1 },
   processed: false, overflow: false, fixed: false, corrupt: false, element: fullPageImage(),
 };
-type ElementHistoryEntry = { assetId: number; before: ImageElement; after: ImageElement };
+type ElementHistoryEntry = {
+  assetId: number; before: ImageElement; after: ImageElement; seq: number;
+  /** Set when the action also put the image on, or took it off, the canvas. */
+  onCanvasBefore?: boolean; onCanvasAfter?: boolean;
+};
+/** Where a file drop landed on the canvas: inside a frame, or free at a point. */
+type DropTarget = { frameId?: string; at?: { x: number; y: number } };
 const sameElement = (left: ImageElement, right: ImageElement) =>
   left.crop?.left === right.crop?.left && left.crop?.top === right.crop?.top
   && left.crop?.right === right.crop?.right && left.crop?.bottom === right.crop?.bottom
@@ -41,23 +51,51 @@ const sameElement = (left: ImageElement, right: ImageElement) =>
   && left.box.rotation === right.box.rotation && left.box.flipH === right.box.flipH && left.box.flipV === right.box.flipV
   && left.box.lockedRatio === right.box.lockedRatio;
 
+/**
+ * A single clock orders the two undo stacks. Document edits (canvas, frames)
+ * and image-element edits are stored separately, so without a shared sequence
+ * number Ctrl+Z would drain one stack before touching the other and undo
+ * actions out of the order the user performed them.
+ */
+let historyClock = 0;
+export const historyTick = () => (historyClock += 1);
+
+type DocEntry = { doc: Doc; seq: number };
+
 /** Undo/redo over the document snapshot only — navigation is never undoable. */
 function useHistory(initial: Doc) {
-  const [stack, setStack] = useState({ past: [] as Doc[], present: initial, future: [] as Doc[] });
-  const setDoc = useCallback((next: Doc | ((current: Doc) => Doc)) => {
+  const [stack, setStack] = useState({ past: [] as DocEntry[], present: initial, future: [] as DocEntry[] });
+  const setDoc = useCallback((next: Doc | ((current: Doc) => Doc), seq?: number) => {
     setStack((state) => {
       const present = typeof next === "function" ? next(state.present) : next;
       if (present === state.present) return state;
-      return { past: [...state.past, state.present].slice(-60), present, future: [] };
+      return { past: [...state.past, { doc: state.present, seq: seq ?? historyTick() }].slice(-60), present, future: [] };
     });
   }, []);
+  /** Mid-gesture update: no history entry, so a drag cannot flood the stack. */
+  const setDocLive = useCallback((next: Doc | ((current: Doc) => Doc)) => {
+    setStack((state) => {
+      const present = typeof next === "function" ? next(state.present) : next;
+      return present === state.present ? state : { ...state, present };
+    });
+  }, []);
+  /** Close a gesture by pushing the snapshot taken before it started. */
+  const commitDoc = useCallback((before: Doc) => {
+    setStack((state) => state.present === before ? state
+      : { past: [...state.past, { doc: before, seq: historyTick() }].slice(-60), present: state.present, future: [] });
+  }, []);
   const undo = useCallback(() => setStack((state) => state.past.length
-    ? { past: state.past.slice(0, -1), present: state.past[state.past.length - 1], future: [state.present, ...state.future] }
+    ? { past: state.past.slice(0, -1), present: state.past[state.past.length - 1].doc, future: [{ doc: state.present, seq: state.past[state.past.length - 1].seq }, ...state.future] }
     : state), []);
   const redo = useCallback(() => setStack((state) => state.future.length
-    ? { past: [...state.past, state.present], present: state.future[0], future: state.future.slice(1) }
+    ? { past: [...state.past, { doc: state.present, seq: state.future[0].seq }], present: state.future[0].doc, future: state.future.slice(1) }
     : state), []);
-  return { doc: stack.present, setDoc, undo, redo, canUndo: stack.past.length > 0, canRedo: stack.future.length > 0 };
+  return {
+    doc: stack.present, setDoc, setDocLive, commitDoc, undo, redo,
+    canUndo: stack.past.length > 0, canRedo: stack.future.length > 0,
+    lastUndoSeq: stack.past.length ? stack.past[stack.past.length - 1].seq : -1,
+    nextRedoSeq: stack.future.length ? stack.future[0].seq : Infinity,
+  };
 }
 
 export function MinimaWorkspace() {
@@ -82,6 +120,9 @@ export function MinimaWorkspace() {
   const [focus, setFocus] = useState<false | "gallery" | "editor">(false);
   const [focusTool, setFocusTool] = useState<EditorTool>("image");
   const [cropSession, setCropSession] = useState<{ assetId: number; crop: CropRect | null } | null>(null);
+  /** Which frame is selected, and whether its content is being edited. */
+  const [frameSelection, setFrameSelection] = useState<{ id: string; editing: boolean } | null>(null);
+  const [replaceIntent, setReplaceIntent] = useState<{ frameId: string; assetId: number; name: string; at?: { x: number; y: number } } | null>(null);
   const [elementHistory, setElementHistory] = useState({ past: [] as ElementHistoryEntry[], future: [] as ElementHistoryEntry[] });
   const elementTransaction = useRef<{ assetId: number; before: ImageElement } | null>(null);
   const commitElementTransactionRef = useRef<() => void>(() => {});
@@ -113,7 +154,8 @@ export function MinimaWorkspace() {
 
   useEffect(() => { localStorage.setItem("minima-export-workflows", JSON.stringify(exportWorkflows)); }, [exportWorkflows]);
 
-  const { doc, setDoc, undo: undoDocument, redo: redoDocument, canUndo: canUndoDocument, canRedo: canRedoDocument } = useHistory(initialDoc);
+  const { doc, setDoc, setDocLive, commitDoc, undo: undoDocument, redo: redoDocument,
+    canUndo: canUndoDocument, canRedo: canRedoDocument, lastUndoSeq, nextRedoSeq } = useHistory(initialDoc);
   const active = assets.find((asset) => asset.id === activeId) ?? assets[0];
   const editorAsset = active ?? EMPTY_EDITOR_ASSET;
   const hasActive = Boolean(active);
@@ -132,9 +174,14 @@ export function MinimaWorkspace() {
   const scoped = useMemo(() => scope === "all" ? assets : scope === "selected" ? assets.filter((asset) => selectedSet.has(asset.id)) : assets.filter((asset) => asset.id === activeId), [assets, scope, selectedSet, activeId]);
   const flagged = useMemo(() => assets.filter((asset) => ["Warning", "Error"].includes(statusOf(asset, target))), [assets, target]);
 
-  /** Close a crop transaction while retaining the accepted crop. */
+  /**
+   * Leaving the current layer closes both open edits: the crop transaction and
+   * any frame content session. Both keep their result; only Esc discards.
+   */
+  const doneContentEditRef = useRef<() => void>(() => {});
   const finishCrop = useCallback(() => {
     commitElementTransactionRef.current();
+    doneContentEditRef.current();
     setCropSession(null);
     setFocusTool("image");
   }, []);
@@ -174,7 +221,7 @@ export function MinimaWorkspace() {
   }, [visible]);
 
   const applyPreset = useCallback((id: string) => {
-    setDoc(docFromPreset(presetById(id, presets)));
+    setDoc((current) => ({ ...docFromPreset(presetById(id, presets)), frames: current.frames }));
     touch(`Preset ${presetById(id, presets).label} loaded`);
   }, [presets, setDoc, touch]);
 
@@ -214,7 +261,7 @@ export function MinimaWorkspace() {
     const after = assetsRef.current.find((asset) => asset.id === transaction.assetId)?.element;
     if (!after || sameElement(transaction.before, after)) return;
     setElementHistory((history) => ({
-      past: [...history.past, { assetId: transaction.assetId, before: transaction.before, after }].slice(-60), future: [],
+      past: [...history.past, { assetId: transaction.assetId, before: transaction.before, after, seq: historyTick() }].slice(-60), future: [],
     }));
   }, []);
   commitElementTransactionRef.current = commitElementTransaction;
@@ -227,21 +274,216 @@ export function MinimaWorkspace() {
   const undo = useCallback(() => {
     commitElementTransaction();
     const entry = elementHistory.past[elementHistory.past.length - 1];
-    if (!entry) { undoDocument(); return; }
-    const next = assetsRef.current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.before } : asset);
+    const targets = undoTargets(entry?.seq ?? null, lastUndoSeq);
+    if (targets.document) undoDocument();
+    if (!entry || !targets.element) return;
+    const next = assetsRef.current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.before, ...(entry.onCanvasBefore === undefined ? {} : { onCanvas: entry.onCanvasBefore }) } : asset);
     assetsRef.current = next; setAssets(next);
     setElementHistory((history) => ({ past: history.past.slice(0, -1), future: [entry, ...history.future] }));
-  }, [commitElementTransaction, elementHistory.past, undoDocument]);
+  }, [commitElementTransaction, elementHistory.past, lastUndoSeq, undoDocument]);
   const redo = useCallback(() => {
     commitElementTransaction();
     const entry = elementHistory.future[0];
-    if (!entry) { redoDocument(); return; }
-    const next = assetsRef.current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.after } : asset);
+    const targets = redoTargets(entry?.seq ?? null, nextRedoSeq);
+    if (targets.document) redoDocument();
+    if (!entry || !targets.element) return;
+    const next = assetsRef.current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.after, ...(entry.onCanvasAfter === undefined ? {} : { onCanvas: entry.onCanvasAfter }) } : asset);
     assetsRef.current = next; setAssets(next);
     setElementHistory((history) => ({ past: [...history.past, entry].slice(-60), future: history.future.slice(1) }));
-  }, [commitElementTransaction, elementHistory.future, redoDocument]);
+  }, [commitElementTransaction, elementHistory.future, nextRedoSeq, redoDocument]);
   const canUndo = elementHistory.past.length > 0 || canUndoDocument;
   const canRedo = elementHistory.future.length > 0 || canRedoDocument;
+
+  /* ---------------------------------------------------------------- frames */
+
+  /**
+   * A frame gesture (drag, resize, or a whole content-edit session) snapshots
+   * the document once at the start and writes live updates without history, so
+   * dragging leaves exactly one undo entry. Nested gestures keep the outer
+   * snapshot: editing content inside an open session stays one action.
+   */
+  const docGesture = useRef<Doc | null>(null);
+  const docRef = useRef(doc);
+  docRef.current = doc;
+  const beginFrameGesture = useCallback(() => { if (!docGesture.current) docGesture.current = docRef.current; }, []);
+  const commitFrameGesture = useCallback(() => {
+    const before = docGesture.current;
+    docGesture.current = null;
+    if (before) commitDoc(before);
+  }, [commitDoc]);
+  /** Esc: put the document back exactly as it was, leaving no history entry. */
+  const cancelFrameGesture = useCallback(() => {
+    const before = docGesture.current;
+    docGesture.current = null;
+    if (before) setDocLive(before);
+  }, [setDocLive]);
+  /**
+   * Release a framed image back onto the canvas as a free layer, recording the
+   * move under `seq` so it undoes together with the document change that goes
+   * with it.
+   */
+  const releaseImage = useCallback((frame: FrameElement, seq: number) => {
+    const asset = assetsRef.current.find((item) => item.id === frame.imageId);
+    if (!asset) return;
+    const released = contentPageElement(frame);
+    const next = assetsRef.current.map((item) => item.id === asset.id
+      ? { ...item, element: released, onCanvas: true } : item);
+    assetsRef.current = next; setAssets(next);
+    setElementHistory((history) => ({
+      past: [...history.past, {
+        assetId: asset.id, before: asset.element, after: released, seq,
+        onCanvasBefore: Boolean(asset.onCanvas), onCanvasAfter: true,
+      }].slice(-60),
+      future: [],
+    }));
+  }, []);
+
+  const frames = doc.frames;
+  /** An image inside a frame is drawn by that frame, never as a free layer too. */
+  const framedIds = useMemo(() => new Set(frames.map((frame) => frame.imageId).filter((id): id is number => id !== null)), [frames]);
+  const canvasAssets = useMemo(
+    () => assets.filter((asset) => (asset.onCanvas || asset.id === activeId) && !framedIds.has(asset.id)),
+    [assets, activeId, framedIds]);
+
+  /**
+   * While a gesture is open every write is live: the snapshot taken when it
+   * started is the only history entry, so Fill or Fit pressed mid-session does
+   * not split one action into several.
+   */
+  const writeFrame = useCallback((next: FrameElement, live = false) => {
+    (live || docGesture.current ? setDocLive : setDoc)((current) => ({ ...current, frames: replaceFrame(current.frames, next) }));
+  }, [setDoc, setDocLive]);
+
+  const addFrame = useCallback((box?: { x: number; y: number; w: number; h: number }) => {
+    const frame = createFrame(box ?? { x: 20, y: 20, w: 60, h: 60 });
+    setDoc((current) => ({ ...current, frames: [...current.frames, frame] }));
+    setFrameSelection({ id: frame.id, editing: false });
+    touch("Frame added");
+    return frame;
+  }, [setDoc, touch]);
+
+  /**
+   * Deleting a frame never deletes an image: whatever was inside returns to the
+   * canvas as a free image at the place it appeared to occupy.
+   */
+  const deleteFrame = useCallback((id: string) => {
+    const frame = docRef.current.frames.find((item) => item.id === id);
+    if (!frame) return;
+    commitFrameGesture();
+    const seq = historyTick();
+    if (frame.imageId !== null) releaseImage(frame, seq);
+    setDoc((current) => ({ ...current, frames: removeFrame(current.frames, id) }), seq);
+    setFrameSelection(null);
+    touch(frame.imageId === null ? "Frame deleted" : "Frame deleted — image kept on the canvas");
+  }, [commitFrameGesture, releaseImage, setDoc, touch]);
+
+  const attachToFrame = useCallback((frameId: string, assetId: number, force = false) => {
+    const frame = docRef.current.frames.find((item) => item.id === frameId);
+    if (!force && frame && frame.imageId !== null && frame.imageId !== assetId) {
+      const incoming = assetsRef.current.find((item) => item.id === assetId);
+      if (incoming) { setReplaceIntent({ frameId, assetId, name: incoming.name }); return; }
+    }
+    const asset = assetsRef.current.find((item) => item.id === assetId);
+    if (!frame || !asset) return;
+    const page = { width: docRef.current.width, height: docRef.current.height };
+    const seq = historyTick();
+    // The image being replaced stays on the page as a free layer instead of
+    // disappearing from the canvas with no way back.
+    if (frame.imageId !== null && frame.imageId !== assetId) releaseImage(frame, seq);
+    setDoc((current) => ({ ...current, frames: replaceFrame(current.frames, attachImage(frame, assetId, asset.src, page)) }), seq);
+    setFrameSelection({ id: frameId, editing: false });
+    setActiveId(assetId);
+    touch(frame.imageId === null ? `${asset.name} placed in frame` : `${asset.name} replaced the framed image`);
+  }, [touch, writeFrame]);
+
+  /** Pull an image back out of its frame; the frame stays, now empty. */
+  const detachFromFrame = useCallback((frameId: string) => {
+    const frame = docRef.current.frames.find((item) => item.id === frameId);
+    if (!frame || frame.imageId === null) return;
+    commitFrameGesture();
+    const seq = historyTick();
+    releaseImage(frame, seq);
+    setDoc((current) => ({ ...current, frames: replaceFrame(current.frames, { ...frame, imageId: null, content: null }) }), seq);
+    setFrameSelection({ id: frameId, editing: false });
+    touch("Image detached from frame");
+  }, [commitFrameGesture, releaseImage, setDoc, touch]);
+
+  const refitFrame = useCallback((frameId: string, mode: "fill" | "fit") => {
+    const frame = docRef.current.frames.find((item) => item.id === frameId);
+    const asset = frame && frame.imageId !== null ? assetsRef.current.find((item) => item.id === frame.imageId) : null;
+    if (!frame || !asset) return;
+    const page = { width: docRef.current.width, height: docRef.current.height };
+    writeFrame(mode === "fill" ? fillFrame(frame, asset.src, page) : fitFrame(frame, asset.src, page));
+  }, [writeFrame]);
+
+  /** Double-click: edit the image inside the frame without touching the frame. */
+  const contentBaseline = useRef<{ frameId: string; frame: FrameElement } | null>(null);
+  const startContentEdit = useCallback((frameId: string) => {
+    const frame = docRef.current.frames.find((item) => item.id === frameId);
+    if (!frame || frame.imageId === null) return;
+    beginFrameGesture();
+    contentBaseline.current = { frameId, frame };
+    setFrameSelection({ id: frameId, editing: true });
+  }, [beginFrameGesture]);
+  /** Reset means the state this session started from, not a fresh Fill. */
+  const resetContentEdit = useCallback(() => {
+    const baseline = contentBaseline.current;
+    if (baseline) writeFrame(baseline.frame, true);
+  }, [writeFrame]);
+  const doneContentEdit = useCallback(() => {
+    commitFrameGesture();
+    setFrameSelection((current) => current?.editing ? { ...current, editing: false } : current);
+  }, [commitFrameGesture]);
+  doneContentEditRef.current = doneContentEdit;
+  const cancelContentEdit = useCallback(() => {
+    cancelFrameGesture();
+    setFrameSelection((current) => current ? { ...current, editing: false } : current);
+  }, [cancelFrameGesture]);
+
+  /**
+   * Choosing a framed image selects its frame, because that image has no free
+   * element on the page. This runs on a change of active image only: watching
+   * the selection instead would re-select the frame the user just dismissed.
+   */
+  const autoSelected = useRef<number | null>(null);
+  useEffect(() => {
+    if (autoSelected.current === activeId) return;
+    autoSelected.current = activeId;
+    const holder = frames.find((frame) => frame.imageId === activeId);
+    if (holder) setFrameSelection({ id: holder.id, editing: false });
+  }, [activeId, frames]);
+
+  /**
+   * Remove the selected free image from the page. Only extra layers can go:
+   * the batch image is the page's own subject, and the Gallery keeps the file
+   * either way.
+   */
+  const removeLayer = useCallback(() => {
+    const asset = assetsRef.current.find((item) => item.id === activeId);
+    if (!asset?.onCanvas) return false;
+    const next = assetsRef.current.map((item) => item.id === activeId ? { ...item, onCanvas: false } : item);
+    assetsRef.current = next; setAssets(next);
+    setElementHistory((history) => ({
+      past: [...history.past, {
+        assetId: asset.id, before: asset.element, after: asset.element, seq: historyTick(),
+        onCanvasBefore: true, onCanvasAfter: false,
+      }].slice(-60),
+      future: [],
+    }));
+    touch(`${asset.name} removed from the canvas`);
+    return true;
+  }, [activeId, touch]);
+
+  const frameProps = {
+    canvasAssets, frameSelection,
+    onFrameAdd: addFrame, onFrameWrite: writeFrame,
+    onFrameGestureStart: beginFrameGesture, onFrameGestureEnd: commitFrameGesture,
+    onFrameSelect: (id: string | null) => setFrameSelection(id ? { id, editing: false } : null),
+    onFrameContentEdit: startContentEdit, onFrameContentDone: doneContentEdit, onFrameContentCancel: cancelContentEdit,
+    onFrameDelete: deleteFrame, onFrameRefit: refitFrame, onFrameReset: resetContentEdit,
+    onFrameDetach: detachFromFrame, onFrameAttach: attachToFrame,
+    onSelectAsset: (item: Asset) => setActiveId(item.id),
+  };
   const startCrop = useCallback(() => {
     if (!active) return;
     beginElementTransaction();
@@ -282,7 +524,7 @@ export function MinimaWorkspace() {
    * not enough. toSources also filters by extension, which a directory picker
    * needs — it reports an empty MIME type for plenty of images.
    */
-  const importFiles = useCallback(async (incoming: FileList | null, quick = false) => {
+  const importFiles = useCallback(async (incoming: FileList | null, quick = false, drop?: DropTarget) => {
     const allCandidates = toSources(Array.from(incoming ?? []), Date.now());
     let preSkipped = 0;
     const knownNames = new Set(assets.map((asset) => asset.name));
@@ -304,6 +546,7 @@ export function MinimaWorkspace() {
       thumbnailUrl: source.thumbnail ? URL.createObjectURL(source.thumbnail) : undefined,
       src: source.width && source.height ? { w: source.width, h: source.height } : undefined,
       corrupt: Boolean(source.error),
+      faint: source.faint,
     }));
     const merged = mergeImport(assets, incomingAssets, policy);
     const retainedUrls = new Set(merged.assets.flatMap((asset) => [asset.url, asset.thumbnailUrl].filter(Boolean)));
@@ -311,15 +554,32 @@ export function MinimaWorkspace() {
       if (asset.url && !retainedUrls.has(asset.url)) URL.revokeObjectURL(asset.url);
       if (asset.thumbnailUrl && !retainedUrls.has(asset.thumbnailUrl)) URL.revokeObjectURL(asset.thumbnailUrl);
     }
-    setAssets(merged.assets);
     const importedUrls = new Set(incomingAssets.map((asset) => asset.url));
-    setSelected(merged.assets.filter((asset) => asset.url && importedUrls.has(asset.url)).map((asset) => asset.id));
-    setActiveId(merged.assets[0]?.id ?? 0);
+    const landed = merged.assets.filter((asset) => asset.url && importedUrls.has(asset.url));
+    // A drop lands where it was dropped: into the frame under the pointer, or
+    // as a free image centred on that point. Without a point nothing moves.
+    const placed = drop?.at && !drop.frameId
+      ? merged.assets.map((asset) => landed.includes(asset)
+        ? { ...asset, onCanvas: true, element: { ...asset.element, box: { ...asset.element.box, x: drop.at!.x - 25, y: drop.at!.y - 25, w: 50, h: 50 } } }
+        : asset)
+      : merged.assets;
+    setAssets(placed);
+    assetsRef.current = placed;
+    if (drop?.frameId && landed[0]) {
+      const frame = docRef.current.frames.find((item) => item.id === drop.frameId);
+      if (frame && frame.imageId !== null) setReplaceIntent({ frameId: frame.id, assetId: landed[0].id, name: landed[0].name, at: drop.at });
+      else if (frame) {
+        writeFrame(attachImage(frame, landed[0].id, landed[0].src, { width: docRef.current.width, height: docRef.current.height }));
+        setFrameSelection({ id: frame.id, editing: false });
+      }
+    }
+    setSelected(landed.map((asset) => asset.id));
+    setActiveId((drop ? landed[0]?.id : merged.assets[0]?.id) ?? merged.assets[0]?.id ?? 0);
     setFork(summarise(picked));
     const skipped = merged.skipped + preSkipped;
     touch(`Imported ${merged.added}${skipped ? `, skipped ${skipped}` : ""}${merged.renamed ? `, renamed ${merged.renamed}` : ""}`);
     if (quick) { setFork(null); setFocus(false); goto("editor"); }
-  }, [assets, goto, policy, touch]);
+  }, [assets, goto, policy, touch, writeFrame]);
 
   const confirmRemoval = useCallback(() => {
     if (!removeIntent) return;
@@ -355,7 +615,7 @@ export function MinimaWorkspace() {
 
   const deletePreset = useCallback((preset: Preset) => {
     setPresets((current) => current.filter((row) => row.id !== preset.id));
-    if (doc.presetId === preset.id) setDoc(docFromPreset(PRESETS[0]));
+    if (doc.presetId === preset.id) setDoc((current) => ({ ...docFromPreset(PRESETS[0]), frames: current.frames }));
     touch(`Deleted ${preset.label}`);
   }, [doc.presetId, setDoc, touch]);
 
@@ -371,7 +631,7 @@ export function MinimaWorkspace() {
     setExportOpen(false);
     setRunDone(false);
     setRun({ done: 0, total: selectedExportQueue.length, current: "", failed: [] });
-    const result = await runExport(selectedExportQueue, specFromDoc(doc), exportOptions,
+    const result = await runExport(selectedExportQueue, specFromDoc(doc, assets), exportOptions,
       (progress) => setRun(progress),
       () => cancelExport.current);
     exportZip.current = result.zip;
@@ -417,9 +677,19 @@ export function MinimaWorkspace() {
       if (mod && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
       if (event.key === "Escape") {
         if (cropSession) { event.preventDefault(); cancelCrop(); return; }
+        // Esc discards a content edit before it clears the selection.
+        if (screen === "editor" && frameSelection?.editing) { event.preventDefault(); cancelContentEdit(); return; }
+        if (screen === "editor" && frameSelection) { event.preventDefault(); setFrameSelection(null); return; }
         setFocus(false); return;
       }
       if (typing) return;
+      // Frame shortcuts only bind on the canvas: in the Gallery, Enter opens
+      // the editor and Backspace belongs to the image list.
+      if (screen === "editor" && (event.key === "Delete" || event.key === "Backspace") && !mod) {
+        if (frameSelection) { event.preventDefault(); deleteFrame(frameSelection.id); return; }
+        if (removeLayer()) { event.preventDefault(); return; }
+      }
+      if (screen === "editor" && event.key === "Enter" && frameSelection && !frameSelection.editing) { event.preventDefault(); startContentEdit(frameSelection.id); return; }
       if (mod && event.key.toLowerCase() === "a" && screen === "gallery") { event.preventDefault(); setSelected(visible.map((asset) => asset.id)); return; }
       if (mod && event.key === "Backspace") { event.preventDefault(); askRemoval(false); return; }
       if (event.key === "Enter" && screen === "gallery" && active) { event.preventDefault(); openEditor(active); return; }
@@ -429,7 +699,7 @@ export function MinimaWorkspace() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-  }, [active, askRemoval, cancelCrop, cropSession, goto, openEditor, redo, screen, undo, visible]);
+  }, [active, askRemoval, cancelContentEdit, cancelCrop, cropSession, deleteFrame, frameSelection, goto, openEditor, redo, removeLayer, screen, startContentEdit, undo, visible]);
 
   const step = useCallback((delta: number) => {
     finishCrop();
@@ -475,8 +745,8 @@ export function MinimaWorkspace() {
       <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom} compare={false}
         compareView="split" splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onElement={setActiveElement} onElementAction={applyElementAction} onElementStart={beginElementTransaction} onElementEnd={commitElementTransaction} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
-        onDrop={(files) => importFiles(files, true)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
-        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} cropActive={Boolean(cropSession)} />
+        onDrop={(files, drop) => importFiles(files, true, drop)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} cropActive={Boolean(cropSession)} {...frameProps} />
     </div>
     <button className="canvas-arrow right" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></button>
     <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
@@ -563,9 +833,9 @@ export function MinimaWorkspace() {
       {screen === "editor" && <Editor asset={editorAsset} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onElement={setActiveElement} onElementAction={applyElementAction} onElementStart={beginElementTransaction} onElementEnd={commitElementTransaction} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
-        onDrop={(files) => importFiles(files, true)}
+        onDrop={(files, drop) => importFiles(files, true, drop)}
         onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
-        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} cropActive={Boolean(cropSession)} />}
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} cropActive={Boolean(cropSession)} {...frameProps} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
 
@@ -609,6 +879,21 @@ export function MinimaWorkspace() {
       onClose={() => { cancelExport.current = true; setRun(null); }} />
     <ShortcutsDialog open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     <RemoveDialog intent={removeIntent} onCancel={() => setRemoveIntent(null)} onConfirm={confirmRemoval} />
+    <ReplaceFrameDialog intent={replaceIntent} onCancel={() => setReplaceIntent(null)}
+      onReplace={() => { if (replaceIntent) attachToFrame(replaceIntent.frameId, replaceIntent.assetId, true); setReplaceIntent(null); }}
+      onFree={() => {
+        // Declining the replacement leaves the frame untouched and keeps the
+        // incoming image on the canvas as its own free layer.
+        if (replaceIntent) {
+          const at = replaceIntent.at;
+          const next = assetsRef.current.map((asset) => asset.id === replaceIntent.assetId
+            ? { ...asset, onCanvas: true, element: at ? { ...asset.element, box: { ...asset.element.box, x: at.x - 25, y: at.y - 25, w: 50, h: 50 } } : asset.element }
+            : asset);
+          assetsRef.current = next; setAssets(next);
+          setActiveId(replaceIntent.assetId); setFrameSelection(null);
+        }
+        setReplaceIntent(null);
+      }} />
     <PresetDialog draft={presetDraft} presets={presets} onCancel={() => setPresetDraft(null)} onSave={savePreset} />
     <ImportForkDialog summary={fork}
       onBatch={() => { setFork(null); goto("batch"); }}

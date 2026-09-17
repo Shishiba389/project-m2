@@ -45,6 +45,8 @@ export type BatchSource = {
   height?: number;
   error?: string;
   thumbnail?: Blob;
+  /** Almost nothing of this image is visible against a white page. */
+  faint?: boolean;
 };
 
 // Nothing is resized in this pass, so the default suffix must not claim it was.
@@ -71,6 +73,42 @@ export function toSources(files: File[], startId = 1): BatchSource[] {
         file,
       };
     });
+}
+
+/**
+ * Whether an image would be invisible on a white page: transparent, white, or
+ * near enough to white that its edges cannot be seen. The editor uses this to
+ * put a checkerboard behind the layer while it is selected.
+ *
+ * A product shot on a white background is mostly invisible pixels too, so the
+ * bar is high: only an image that is almost entirely invisible counts, which a
+ * subject covering any real part of the frame will not reach.
+ */
+const INVISIBLE_ALPHA = 16;
+const INVISIBLE_LUMA = 244;
+export function isFaint(pixels: Uint8ClampedArray, threshold = 0.85) {
+  const total = Math.floor(pixels.length / 4);
+  if (!total) return false;
+  let invisible = 0;
+  for (let at = 0; at < pixels.length; at += 4) {
+    if (pixels[at + 3] < INVISIBLE_ALPHA) { invisible += 1; continue; }
+    const luma = 0.2126 * pixels[at] + 0.7152 * pixels[at + 1] + 0.0722 * pixels[at + 2];
+    if (luma > INVISIBLE_LUMA) invisible += 1;
+  }
+  return invisible / total >= threshold;
+}
+
+/** Sample the decoded image small; the answer is a statistic, not a picture. */
+async function faintnessOf(bitmap: ImageBitmap, edge = 32) {
+  const width = Math.max(1, Math.min(edge, bitmap.width));
+  const height = Math.max(1, Math.min(edge, bitmap.height));
+  const canvas = typeof OffscreenCanvas !== "undefined"
+    ? new OffscreenCanvas(width, height)
+    : Object.assign(document.createElement("canvas"), { width, height });
+  const context = (canvas as HTMLCanvasElement).getContext("2d", { willReadFrequently: true });
+  if (!context) return false;
+  context.drawImage(bitmap, 0, 0, width, height);
+  return isFaint(context.getImageData(0, 0, width, height).data);
 }
 
 async function thumbnailOf(bitmap: ImageBitmap, maxEdge = 320) {
@@ -108,7 +146,9 @@ export async function inspectSources(sources: BatchSource[], concurrency = Math.
       try {
         let thumbnail: Blob | undefined;
         try { thumbnail = await thumbnailOf(bitmap); } catch { /* Preview failure must not invalidate a decodable source. */ }
-        results[index] = { ...source, width: bitmap.width, height: bitmap.height, thumbnail };
+        let faint = false;
+        try { faint = await faintnessOf(bitmap); } catch { /* The locator is a hint; failing to sample is not an import error. */ }
+        results[index] = { ...source, width: bitmap.width, height: bitmap.height, thumbnail, faint };
       } finally { bitmap.close?.(); }
     } catch (error) { results[index] = { ...source, error: (error as Error).message || "could not decode image" }; }
       onProgress(++done, sources.length);
@@ -462,6 +502,26 @@ export function demo() {
     > estimateBytes(sources, { ...defaultOutput, format: "jpg", quality: 40 }),
     "higher quality estimates larger",
   );
+
+  // A transparent or white image needs a locator; a real subject does not.
+  const pixels = (count: number, rgba: [number, number, number, number]) =>
+    Uint8ClampedArray.from(Array.from({ length: count * 4 }, (_, at) => rgba[at % 4]));
+  const join = (...parts: Uint8ClampedArray[]) => {
+    const out = new Uint8ClampedArray(parts.reduce((n, part) => n + part.length, 0));
+    let at = 0;
+    for (const part of parts) { out.set(part, at); at += part.length; }
+    return out;
+  };
+  console.assert(isFaint(pixels(100, [0, 0, 0, 0])), "a fully transparent image is faint");
+  console.assert(isFaint(pixels(100, [255, 255, 255, 255])), "so is a white one");
+  console.assert(!isFaint(pixels(100, [12, 12, 12, 255])), "a dark image is not");
+  console.assert(isFaint(pixels(100, [250, 250, 250, 120])), "a near-white wash is invisible on a white page, whatever its alpha");
+  console.assert(!isFaint(pixels(100, [230, 230, 230, 255])), "a light grey still reads against white");
+  // 30 % subject on white: the edges are invisible, the image is not.
+  console.assert(!isFaint(join(pixels(30, [20, 20, 20, 255]), pixels(70, [255, 255, 255, 255]))), "a product on white keeps its own locator off");
+  // 10 % subject: almost nothing to see, so the checkerboard earns its place.
+  console.assert(isFaint(join(pixels(10, [20, 20, 20, 255]), pixels(90, [255, 255, 255, 255]))), "an almost empty page is faint");
+  console.assert(!isFaint(new Uint8ClampedArray(0)), "an empty sample is never faint");
 
   finish("batch.ts");
 }

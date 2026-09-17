@@ -17,13 +17,32 @@ import {
   type Asset, type Doc, type DupPolicy, type Format, type GalleryFilter, type Handle,
   type Preset, type Resolution, type Status, type WarningReason,
 } from "@/src/flow";
-import { cropImage, fullCrop, fullPageImage, localResizeDelta, moveCrop, moveImage, nudgeImage, resizeCrop, resizeImage, rotateImage, type CropRect, type ImageElement } from "@/src/image-geometry";
+import { cropImage, fullCrop, fullPageImage, localResizeDelta, moveCrop, moveImage, nudgeImage, resizeCrop, resizeImage, rotateImage, type CropRect, type ImageBox, type ImageElement } from "@/src/image-geometry";
+import { frameAt, frameFromDrag, type FrameElement } from "@/src/frame-geometry";
 
 export type Guides = { grid: boolean; rulers: boolean; snapGrid: boolean; snapSafe: boolean };
 export const defaultGuides: Guides = { grid: true, rulers: true, snapGrid: true, snapSafe: true };
 
 export type CompareView = "split" | "before" | "after";
-export type EditorTool = "image" | "crop" | "canvas";
+export type EditorTool = "image" | "crop" | "canvas" | "frame";
+export type FrameSelection = { id: string; editing: boolean };
+
+/** Document-space box to CSS. Percentages are of the nearest positioned layer. */
+export const boxStyle = (box: ImageBox): React.CSSProperties => ({
+  left: `${box.x}%`, top: `${box.y}%`, width: `${box.w}%`, height: `${box.h}%`,
+  transform: `rotate(${box.rotation}deg) scale(${box.flipH ? -1 : 1}, ${box.flipV ? -1 : 1})`,
+});
+/** Frame boxes reuse the image geometry functions, which take an ImageElement. */
+const asElement = (frame: FrameElement): ImageElement => ({ box: frame.box, crop: null });
+/** Frames resize freely; holding Shift locks the ratio for the duration. */
+const ratioLocked = (frame: FrameElement, locked: boolean): ImageElement =>
+  ({ box: { ...frame.box, lockedRatio: locked }, crop: null });
+/**
+ * A white or fully transparent image is invisible against a white page, so the
+ * selected layer gets a checkerboard behind it. The flag is measured from the
+ * decoded pixels at import, not guessed from the file's format.
+ */
+const needsLocator = (asset: Asset) => asset.faint === true;
 
 export type Theme = "light" | "dark" | "system";
 
@@ -261,6 +280,7 @@ export function ContextualToolbar({ mode, onMode, element, fit, onFit, onReplace
       <button className={mode === "image" ? "active" : ""} aria-pressed={mode === "image"} onClick={() => selectMode("image")}>Edit image</button>
       <button onClick={onReplace}>Replace</button>
       <button className={mode === "crop" ? "active" : ""} aria-pressed={mode === "crop"} onClick={enterCrop}>Crop</button>
+      <button className={mode === "frame" ? "active" : ""} aria-pressed={mode === "frame"} title="Drag on the canvas to draw a frame" onClick={() => onMode(mode === "frame" ? "image" : "frame")}>Add frame</button>
       <button className={mode === "canvas" ? "active" : ""} aria-pressed={mode === "canvas"} onClick={() => selectMode("canvas")}>Canvas</button>
     </div>
     {mode === "image" && <><div className="toolbar-segment" role="group" aria-label="Image fill mode">
@@ -278,15 +298,38 @@ export function ContextualToolbar({ mode, onMode, element, fit, onFit, onReplace
   </div>;
 }
 
-export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onElement, onElementAction, onElementStart, onElementEnd, onCropStart, onCropDone, onCropCancel, onCropReset, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false, editMode = "image", cropActive = false }: {
+export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onElement, onElementAction, onElementStart, onElementEnd, onCropStart, onCropDone, onCropCancel, onCropReset, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false, editMode = "image", cropActive = false,
+  canvasAssets, frameSelection = null, onFrameAdd = () => {}, onFrameWrite = () => {}, onFrameGestureStart = () => {},
+  onFrameGestureEnd = () => {}, onFrameSelect = () => {}, onFrameContentEdit = () => {}, onFrameContentDone = () => {},
+  onFrameContentCancel = () => {}, onFrameDelete = () => {}, onFrameRefit = () => {}, onFrameReset = () => {}, onFrameDetach = () => {},
+  onFrameAttach = () => {}, onSelectAsset = () => {} }: {
   asset: Asset; assets: Asset[]; selected: number[]; doc: Doc; zoom: number;
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
   onElement: (element: ImageElement) => void; onElementAction: (element: ImageElement) => void; onElementStart: () => void; onElementEnd: () => void; onCropStart: () => void; onCropDone: () => void; onCropCancel: () => void; onCropReset: () => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
-  onImport: () => void; onDrop: (files: FileList) => void; onFit: (fit: Doc["fit"]) => void;
+  onImport: () => void; onDrop: (files: FileList, drop?: { frameId?: string; at?: { x: number; y: number } }) => void; onFit: (fit: Doc["fit"]) => void;
   onToggleGrid: () => void; onStep: (delta: number) => void;
   focusMode?: boolean;
   editMode?: EditorTool;
   cropActive?: boolean;
+  /** Free image layers on the page. Defaults to the active image alone. */
+  canvasAssets?: Asset[];
+  frameSelection?: FrameSelection | null;
+  onFrameAdd?: (box: { x: number; y: number; w: number; h: number }) => void;
+  /** `live` writes without a history entry, for the duration of a gesture. */
+  onFrameWrite?: (frame: FrameElement, live?: boolean) => void;
+  onFrameGestureStart?: () => void;
+  onFrameGestureEnd?: () => void;
+  onFrameSelect?: (id: string | null) => void;
+  onFrameContentEdit?: (id: string) => void;
+  onFrameContentDone?: () => void;
+  onFrameContentCancel?: () => void;
+  onFrameDelete?: (id: string) => void;
+  onFrameRefit?: (id: string, mode: "fill" | "fit") => void;
+  /** Restore the content to the state this edit session started from. */
+  onFrameReset?: () => void;
+  onFrameDetach?: (id: string) => void;
+  onFrameAttach?: (frameId: string, assetId: number) => void;
+  onSelectAsset?: (asset: Asset) => void;
 }) {
   const [normalMode, setNormalMode] = useState<EditorTool>("image");
   const activeMode = focusMode ? editMode : normalMode;
@@ -308,6 +351,15 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   const imageRotate = useRef<{ angle: number; rotation: number; element: ImageElement } | null>(null);
   const cropGesture = useRef<{ mode: "move" | Handle; x: number; y: number; crop: CropRect } | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const frameDrag = useRef<{ x: number; y: number; frame: FrameElement } | null>(null);
+  const frameResize = useRef<{ handle: Handle; x: number; y: number; frame: FrameElement } | null>(null);
+  const frameRotate = useRef<{ angle: number; rotation: number; frame: FrameElement } | null>(null);
+  const contentDrag = useRef<{ x: number; y: number; frame: FrameElement } | null>(null);
+  const contentResize = useRef<{ handle: Handle; x: number; y: number; frame: FrameElement } | null>(null);
+  const [newFrame, setNewFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  /** True while a content drag is outside its frame: releasing there detaches. */
+  const [detachArmed, setDetachArmed] = useState(false);
+  const frameCreate = useRef<{ x: number; y: number } | null>(null);
 
   const element = asset.element;
   const crop = element.crop ?? fullCrop();
@@ -340,7 +392,120 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
 
   const canvasStyle = { aspectRatio: `${doc.width} / ${doc.height}`, transform: `scale(${zoom / 100})` };
 
-  const imageStyle = { left: `${element.box.x}%`, top: `${element.box.y}%`, width: `${element.box.w}%`, height: `${element.box.h}%`, transform: `rotate(${element.box.rotation}deg) scale(${element.box.flipH ? -1 : 1}, ${element.box.flipV ? -1 : 1})` };
+  const imageStyle = boxStyle(element.box);
+
+  /* ---------------------------------------------------------------- frames */
+
+  const frames = doc.frames;
+  const layers = canvasAssets ?? [asset];
+  const framedAsset = (frame: FrameElement) => assets.find((item) => item.id === frame.imageId) ?? null;
+  const selectedFrame = frames.find((frame) => frame.id === frameSelection?.id) ?? null;
+  const editingContent = Boolean(selectedFrame && frameSelection?.editing && selectedFrame.content);
+  // A frame owns the selection while it is active, so the free-image overlay steps aside.
+  const imageActive = activeMode === "image" && !selectedFrame;
+
+  /** Pointer travel since a gesture started, in percentages of the page. */
+  const pageDelta = (event: React.PointerEvent, from: { x: number; y: number }) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return { dx: (event.clientX - from.x) / rect.width * 100, dy: (event.clientY - from.y) / rect.height * 100 };
+  };
+  const pagePoint = (event: React.PointerEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    return { x: (event.clientX - rect.left) / rect.width * 100, y: (event.clientY - rect.top) / rect.height * 100 };
+  };
+  /**
+   * Moving, resizing or rotating the frame itself is one document transaction
+   * per gesture, so releasing the pointer commits it.
+   */
+  const endFrameGesture = () => {
+    frameDrag.current = null; frameResize.current = null; frameRotate.current = null;
+    onFrameGestureEnd();
+  };
+  /**
+   * Dragging the image inside a frame is part of the open content session, not
+   * a transaction of its own: committing here would consume the session's
+   * snapshot and leave Esc with nothing to discard.
+   */
+  const endContentGesture = (event: React.PointerEvent) => {
+    const dragged = contentDrag.current?.frame;
+    contentDrag.current = null; contentResize.current = null;
+    if (!dragged || !detachArmed) { setDetachArmed(false); return; }
+    setDetachArmed(false);
+    // Released outside its frame: the image leaves the frame and stays on the
+    // canvas exactly where it was dropped.
+    const point = pagePoint(event);
+    if (point && !frameAt([dragged], point.x, point.y)) onFrameDetach(dragged.id);
+  };
+  const moveFrameGesture = (event: React.PointerEvent) => {
+    const drag = frameDrag.current;
+    if (drag) {
+      const delta = pageDelta(event, drag);
+      if (delta) onFrameWrite({ ...drag.frame, box: { ...drag.frame.box, x: drag.frame.box.x + delta.dx, y: drag.frame.box.y + delta.dy } }, true);
+      return;
+    }
+    const resize = frameResize.current;
+    if (resize) {
+      const delta = pageDelta(event, resize);
+      if (!delta) return;
+      const local = localResizeDelta(asElement(resize.frame), delta.dx, delta.dy);
+      // Resizing a frame re-clips it; the image inside keeps its own transform.
+      // A frame resizes freely, and Shift constrains it to its current ratio.
+      onFrameWrite({ ...resize.frame, box: resizeImage(ratioLocked(resize.frame, event.shiftKey), resize.handle, local.dx, local.dy, false).box }, true);
+      return;
+    }
+    const rotate = frameRotate.current;
+    if (rotate) {
+      const next = rotate.rotation + angleToBoxCentre(event, rotate.frame.box) - rotate.angle;
+      onFrameWrite({ ...rotate.frame, box: rotateImage(asElement(rotate.frame), event.shiftKey ? Math.round(next / 15) * 15 : next).box }, true);
+      return;
+    }
+    const content = contentDrag.current;
+    if (content && content.frame.content) {
+      const delta = pageDelta(event, content);
+      if (!delta) return;
+      // Page percentages become frame percentages; the frame box never moves.
+      onFrameWrite({ ...content.frame, content: moveImage(content.frame.content, delta.dx / content.frame.box.w * 100, delta.dy / content.frame.box.h * 100) }, true);
+      const point = pagePoint(event);
+      setDetachArmed(Boolean(point && !frameAt([content.frame], point.x, point.y)));
+      return;
+    }
+    const scale = contentResize.current;
+    if (scale && scale.frame.content) {
+      const delta = pageDelta(event, scale);
+      if (!delta) return;
+      const local = localResizeDelta(scale.frame.content, delta.dx / scale.frame.box.w * 100, delta.dy / scale.frame.box.h * 100);
+      onFrameWrite({ ...scale.frame, content: resizeImage(scale.frame.content, scale.handle, local.dx, local.dy, event.shiftKey) }, true);
+    }
+  };
+  const angleToBoxCentre = (event: React.PointerEvent, box: ImageBox) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return 0;
+    const x = rect.left + (box.x + box.w / 2) / 100 * rect.width;
+    const y = rect.top + (box.y + box.h / 2) / 100 * rect.height;
+    return Math.atan2(event.clientY - y, event.clientX - x) * 180 / Math.PI;
+  };
+  const nudgeFrame = (event: React.KeyboardEvent, frame: FrameElement) => {
+    const amount = event.shiftKey ? 5 : 1;
+    const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
+    const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
+    if (!dx && !dy) return false;
+    event.preventDefault();
+    onFrameWrite({ ...frame, box: { ...frame.box, x: frame.box.x + dx, y: frame.box.y + dy } });
+    return true;
+  };
+
+  const frameLayer = (frame: FrameElement) => {
+    const inside = framedAsset(frame);
+    return <div key={frame.id} className="frame-layer" style={boxStyle(frame.box)}>
+      {inside && frame.content
+        ? <div className="frame-content" style={boxStyle(frame.content.box)}>
+            <CroppedAssetImage asset={inside} fit="fill" crop={frame.content.crop} align={doc.align} large />
+          </div>
+        : <div className="frame-placeholder"><FileImage aria-hidden="true" /><span>Drop image here</span></div>}
+    </div>;
+  };
   const resized = <div ref={canvasRef} className="canvas-scene" style={canvasStyle}>
     <div className="canvas page-canvas" style={{ background: doc.background }}>
       {guides.grid && <div className="canvas-grid" aria-hidden="true" />}
@@ -348,20 +513,137 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
       {/* This is the page's visual output boundary. It intentionally clips only
           the page render, never the selectable image above it. */}
       <div className="page-render-clip" aria-hidden="true">
-        <div className="page-render-image" style={imageStyle}><CroppedAssetImage asset={asset} fit={objectFitFor(doc.fit)} crop={element.crop} align={doc.align} large /></div>
+        {layers.map((layer) => <div key={layer.id} className="page-render-image" style={boxStyle(layer.element.box)}>
+          <CroppedAssetImage asset={layer} fit={objectFitFor(doc.fit)} crop={layer.element.crop} align={doc.align} large />
+        </div>)}
+        {frames.map(frameLayer)}
       </div>
     </div>
-    <div className={`selection-overlay ${activeMode === "image" ? "image-mode" : ""} ${activeMode === "crop" ? "crop-mode" : ""}`} role="group" aria-label={`Selected image ${asset.name}`}>
+    <div className={`selection-overlay ${imageActive ? "image-mode" : ""} ${activeMode === "crop" ? "crop-mode" : ""} ${activeMode === "frame" ? "frame-mode" : ""}`} role="group" aria-label={`Selected image ${asset.name}`}
+      onPointerDown={(event) => {
+        if (activeMode === "frame") {
+          const point = pagePoint(event);
+          if (!point) return;
+          event.currentTarget.setPointerCapture(event.pointerId);
+          frameCreate.current = point; setNewFrame({ ...point, w: 0, h: 0 });
+          return;
+        }
+        if (selectedFrame) { if (editingContent) onFrameContentDone(); onFrameSelect(null); }
+      }}
+      onPointerMove={(event) => {
+        const start = frameCreate.current;
+        if (!start) return;
+        const point = pagePoint(event);
+        if (point) setNewFrame(frameFromDrag(start.x, start.y, point.x, point.y).box);
+      }}
+      onPointerUp={() => {
+        const box = newFrame;
+        frameCreate.current = null; setNewFrame(null);
+        // A click without a drag still gets a usable frame rather than nothing.
+        if (box) onFrameAdd(box.w < 2 || box.h < 2 ? { x: box.x, y: box.y, w: 30, h: 30 } : box);
+        if (activeMode === "frame") setNormalMode("image");
+      }}>
+      {selectedFrame && activeMode !== "frame" && <div className="deselect-catcher" aria-hidden="true"
+        onPointerDown={() => { if (editingContent) onFrameContentDone(); onFrameSelect(null); }} />}
+      {newFrame && <div className="frame-draft" style={boxStyle({ ...newFrame, rotation: 0, flipH: false, flipV: false, lockedRatio: false })} aria-hidden="true" />}
+      {/* Unselected layers are click targets only; the selected one gets handles. */}
+      {layers.filter((layer) => layer.id !== asset.id).map((layer) => <button key={layer.id} type="button" className="layer-hit"
+        style={boxStyle(layer.element.box)} aria-label={`Select image ${layer.name}`} title={layer.name}
+        onPointerDown={(event) => { event.stopPropagation(); onSelectAsset(layer); }} />)}
+      {frames.filter((frame) => frame.id !== frameSelection?.id).map((frame) => <button key={frame.id} type="button"
+        className={`layer-hit frame-hit ${frame.imageId === null ? "empty" : ""}`} style={boxStyle(frame.box)}
+        aria-label={frame.imageId === null ? "Select empty frame" : `Select frame containing ${framedAsset(frame)?.name ?? "an image"}`}
+        onPointerDown={(event) => { event.stopPropagation(); if (editingContent) onFrameContentDone(); onFrameSelect(frame.id); }}
+        onDoubleClick={() => frame.imageId !== null && onFrameContentEdit(frame.id)} />)}
+      {selectedFrame && !editingContent && <div className="frame-selection" style={boxStyle(selectedFrame.box)} tabIndex={0}
+        role="group" aria-roledescription="frame" aria-label={selectedFrame.imageId === null ? "Empty frame" : `Frame containing ${framedAsset(selectedFrame)?.name ?? "an image"}`}
+        onKeyDown={(event) => {
+          if (nudgeFrame(event, selectedFrame)) return;
+          if (event.key === "Enter" && selectedFrame.imageId !== null) { event.preventDefault(); onFrameContentEdit(selectedFrame.id); }
+          if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); onFrameDelete(selectedFrame.id); }
+        }}
+        onDoubleClick={() => selectedFrame.imageId !== null && onFrameContentEdit(selectedFrame.id)}
+        onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onFrameGestureStart(); frameDrag.current = { x: event.clientX, y: event.clientY, frame: selectedFrame }; }}
+        onPointerMove={moveFrameGesture} onPointerUp={endFrameGesture} onPointerCancel={endFrameGesture}>
+        <div className="frame-outline" aria-hidden="true" />
+        <span className="layer-label">{selectedFrame.imageId === null ? "Empty frame" : "Frame"}</span>
+        {HANDLES.map((handle) => <button key={handle} type="button" className={`frame-handle handle-${handle}`}
+          aria-label={`Resize frame from ${handle}`} title={`Resize frame from ${handle}`}
+          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onFrameGestureStart(); frameResize.current = { handle, x: event.clientX, y: event.clientY, frame: selectedFrame }; }}
+          onPointerMove={moveFrameGesture} onPointerUp={endFrameGesture} onPointerCancel={endFrameGesture}
+          onKeyDown={(event) => {
+            const amount = event.shiftKey ? 5 : 1;
+            const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
+            const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
+            if (!dx && !dy) return;
+            event.preventDefault();
+            onFrameWrite({ ...selectedFrame, box: resizeImage(ratioLocked(selectedFrame, event.shiftKey), handle, dx, dy, false).box });
+          }} />)}
+        <button type="button" className="rotation-handle" aria-label={`Rotate frame, ${Math.round(selectedFrame.box.rotation)} degrees`} title="Rotate frame"
+          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onFrameGestureStart(); frameRotate.current = { angle: angleToBoxCentre(event, selectedFrame.box), rotation: selectedFrame.box.rotation, frame: selectedFrame }; }}
+          onPointerMove={moveFrameGesture} onPointerUp={endFrameGesture} onPointerCancel={endFrameGesture} />
+      </div>}
+      {selectedFrame && !editingContent && <div className="frame-actions" role="group" aria-label="Frame actions">
+        {selectedFrame.imageId === null
+          ? <><Button size="sm" variant="secondary" onClick={onImport}><Upload /> Add image</Button>
+              {asset.id !== 0 && <Button size="sm" variant="secondary" onClick={() => onFrameAttach(selectedFrame.id, asset.id)}>Place {asset.name}</Button>}</>
+          : <><Button size="sm" variant="secondary" onClick={() => onFrameContentEdit(selectedFrame.id)}>Edit content</Button>
+              <Button size="sm" variant="secondary" onClick={() => onFrameRefit(selectedFrame.id, "fill")}>Fill</Button>
+              <Button size="sm" variant="secondary" onClick={() => onFrameRefit(selectedFrame.id, "fit")}>Fit</Button>
+              <Button size="sm" variant="secondary" onClick={() => onFrameDetach(selectedFrame.id)}>Detach</Button></>}
+        <Button size="sm" variant="secondary" onClick={() => onFrameDelete(selectedFrame.id)}><Trash2 /> Delete frame</Button>
+      </div>}
+      {/* Edit content: the frame is frozen, the image shows in full, and
+          everything outside the frame is dimmed rather than clipped. */}
+      {selectedFrame && editingContent && selectedFrame.content && <div className="content-edit" style={boxStyle(selectedFrame.box)}>
+        <div className="content-edit-image" style={boxStyle(selectedFrame.content.box)} tabIndex={0}
+          role="group" aria-roledescription="frame content" aria-label={`Position ${framedAsset(selectedFrame)?.name ?? "image"} inside its frame`}
+          onKeyDown={(event) => {
+            const amount = event.shiftKey ? 5 : 1;
+            const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0;
+            const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0;
+            if (!dx && !dy) return;
+            event.preventDefault();
+            onFrameWrite({ ...selectedFrame, content: moveImage(selectedFrame.content!, dx, dy) }, true);
+          }}
+          onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); contentDrag.current = { x: event.clientX, y: event.clientY, frame: selectedFrame }; }}
+          onPointerMove={moveFrameGesture} onPointerUp={endContentGesture} onPointerCancel={endContentGesture}>
+          {framedAsset(selectedFrame) && <CroppedAssetImage asset={framedAsset(selectedFrame)!} fit="fill" crop={selectedFrame.content.crop} align={doc.align} large />}
+          {HANDLES.map((handle) => <button key={handle} type="button" className={`frame-handle handle-${handle}`}
+            aria-label={`Scale content from ${handle}`} title={`Scale content from ${handle}`}
+            onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); contentResize.current = { handle, x: event.clientX, y: event.clientY, frame: selectedFrame }; }}
+            onPointerMove={moveFrameGesture} onPointerUp={endContentGesture} onPointerCancel={endContentGesture} />)}
+        </div>
+        <div className="content-edit-mask" aria-hidden="true" />
+        <span className={`layer-label ${detachArmed ? "detach-armed" : ""}`}>{detachArmed ? "Release to detach" : "Frame content"}</span>
+      </div>}
+      {selectedFrame && editingContent && <div className="frame-actions" role="group" aria-label="Frame content actions">
+        <Button size="sm" variant="secondary" onClick={() => onFrameRefit(selectedFrame.id, "fill")}>Fill</Button>
+        <Button size="sm" variant="secondary" onClick={() => onFrameRefit(selectedFrame.id, "fit")}>Fit</Button>
+        <Button size="sm" variant="secondary" onClick={onFrameReset}>Reset</Button>
+        <Button size="sm" variant="secondary" onClick={onFrameContentCancel}>Cancel</Button>
+        <Button size="sm" onClick={onFrameContentDone}><Check /> Done</Button>
+      </div>}
       <p className="sr-only" id={`image-instructions-${asset.id}`}>Use arrow keys to move the selected image. Use the resize and rotation buttons for keyboard adjustments.</p>
-      <div className={`image-layer ${activeMode === "image" ? "image-editing" : ""}`} style={imageStyle} tabIndex={activeMode === "image" ? 0 : -1}
+      <div className={`image-layer ${imageActive ? "image-editing" : ""} ${needsLocator(asset) ? "needs-locator" : ""}`} style={imageStyle} tabIndex={imageActive ? 0 : -1}
         role="group" aria-roledescription="movable image" aria-describedby={`image-instructions-${asset.id}`} aria-label={`Image ${asset.name}`}
-        onKeyDown={(event) => { if (activeMode !== "image") return; const directions = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" } as const; const direction = directions[event.key as keyof typeof directions]; if (direction) { event.preventDefault(); onElementStart(); placeElement(nudgeImage(element, direction, event.shiftKey ? 5 : 1)); onElementEnd(); } }}
-        onPointerDown={(event) => { if (activeMode !== "image") return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onElementStart(); imageDrag.current = { x: event.clientX, y: event.clientY, element }; }}
+        onKeyDown={(event) => { if (!imageActive) return; const directions = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" } as const; const direction = directions[event.key as keyof typeof directions]; if (direction) { event.preventDefault(); onElementStart(); placeElement(nudgeImage(element, direction, event.shiftKey ? 5 : 1)); onElementEnd(); } }}
+        onPointerDown={(event) => { if (!imageActive) return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onElementStart(); imageDrag.current = { x: event.clientX, y: event.clientY, element }; }}
         onPointerMove={(event) => { const state = imageDrag.current; const rect = canvasRef.current?.getBoundingClientRect(); if (!state || !rect || activeMode !== "image") return; placeElement(moveImage(state.element, (event.clientX - state.x) / rect.width * 100, (event.clientY - state.y) / rect.height * 100)); }}
-        onPointerUp={() => { imageDrag.current = null; onElementEnd(); }} onPointerCancel={() => { imageDrag.current = null; onElementEnd(); }}
-        onWheel={(event) => { if (activeMode !== "image") return; event.preventDefault(); onElementStart(); const delta = event.deltaY < 0 ? 8 : -8; placeElement(resizeImage(element, "se", delta, delta)); onElementEnd(); }}>
+        onPointerUp={(event) => {
+          const dragged = Boolean(imageDrag.current);
+          imageDrag.current = null; onElementEnd();
+          if (!dragged) return;
+          // Released over a frame: the image goes into that frame instead of
+          // staying loose on the page.
+          const point = pagePoint(event);
+          const hit = point ? frameAt(frames, point.x, point.y) : null;
+          if (hit) onFrameAttach(hit.id, asset.id);
+        }} onPointerCancel={() => { imageDrag.current = null; onElementEnd(); }}
+        onWheel={(event) => { if (!imageActive) return; event.preventDefault(); onElementStart(); const delta = event.deltaY < 0 ? 8 : -8; placeElement(resizeImage(element, "se", delta, delta)); onElementEnd(); }}>
         <CroppedAssetImage asset={asset} fit={objectFitFor(doc.fit)} crop={element.crop} align={doc.align} large />
-        {activeMode === "image" && HANDLES.map((handle) => <button key={handle} type="button"
+        <span className="layer-label">Image</span>
+        {imageActive && HANDLES.map((handle) => <button key={handle} type="button"
           aria-label={`Resize image from ${handle}`} title={`Resize image from ${handle}`} className={`frame-handle image-handle handle-${handle}`}
           onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onElementStart(); imageResize.current = { handle, x: event.clientX, y: event.clientY, element }; }}
           onPointerMove={handleImageResize} onPointerUp={() => { imageResize.current = null; onElementEnd(); }} onPointerCancel={() => { imageResize.current = null; onElementEnd(); }}
@@ -393,7 +675,14 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
     <div className="editor-stage" style={{ background: doc.background }}
       onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; setDropActive(true); }}
       onDragLeave={(event) => { if (event.currentTarget === event.target) setDropActive(false); }}
-      onDrop={(event) => { event.preventDefault(); setDropActive(false); if (event.dataTransfer.files.length) onDrop(event.dataTransfer.files); }}>
+      onDrop={(event) => {
+        event.preventDefault(); setDropActive(false);
+        if (!event.dataTransfer.files.length) return;
+        const rect = canvasRef.current?.getBoundingClientRect();
+        const at = rect ? { x: (event.clientX - rect.left) / rect.width * 100, y: (event.clientY - rect.top) / rect.height * 100 } : undefined;
+        const hit = at ? frameAt(frames, at.x, at.y) : null;
+        onDrop(event.dataTransfer.files, { frameId: hit?.id, at });
+      }}>
       {!focusMode && <div className="editor-toolbar" aria-label="Selected image toolbar">
         {assets.length > 0 && <ContextualToolbar mode={normalMode} onMode={setNormalMode} element={element} fit={doc.fit} onFit={onFit} onReplace={onImport} onElement={onElementAction}
           onCropStart={onCropStart} onCropDone={onCropDone} onCropCancel={onCropCancel} onCropReset={onCropReset} onToggleGrid={onToggleGrid} grid={guides.grid} />}

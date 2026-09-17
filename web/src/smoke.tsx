@@ -14,6 +14,7 @@ import {
 } from "@/src/dialogs";
 import { makeZip } from "@/src/batch";
 import { encodableFormat, fitInto, framePx, specFromDoc } from "@/src/exportrun";
+import { attachImage, createFrame } from "@/src/frame-geometry";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import {
@@ -92,6 +93,23 @@ check("editor crop", <Editor asset={assets[0]} assets={assets} selected={[1]} do
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} focusMode editMode="crop" />,
   "crop-overlay", "crop-window", "Resize crop from nw");
+
+// Frames: an empty one advertises itself, a filled one clips its image, and
+// edit-content dims the page instead of clipping.
+const emptyFrame = createFrame({ x: 10, y: 10, w: 40, h: 40 });
+const filledFrame = attachImage(createFrame({ x: 50, y: 50, w: 40, h: 40 }), assets[0].id, assets[0].src, { width: doc.width, height: doc.height });
+const framedDoc = { ...doc, frames: [emptyFrame, filledFrame] };
+check("editor frames", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={framedDoc} zoom={100} compare={false}
+  compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop}
+  frameSelection={{ id: emptyFrame.id, editing: false }} />,
+  "frame-layer", "frame-placeholder", "Drop image here", "frame-selection", "Empty frame", "Resize frame from nw", "Delete frame", "Add frame");
+
+check("editor frame content", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={framedDoc} zoom={100} compare={false}
+  compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop}
+  frameSelection={{ id: filledFrame.id, editing: true }} />,
+  "content-edit", "content-edit-mask", "Frame content", "Scale content from nw", "Done", "Cancel", "Fill", "Fit");
 
 check("review", <Review assets={assets.slice(2)} target={target} onOpen={noop} onFix={noop} onFixAll={noop} onRetry={noop} />,
   "Error Review", "Auto-fix scaling", "Re-run preset");

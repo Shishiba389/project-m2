@@ -194,6 +194,30 @@ export function RemoveDialog({ intent, onCancel, onConfirm }: {
   </DialogContent></Dialog>;
 }
 
+/**
+ * Dropping onto a frame that already holds an image is never a silent
+ * replacement: the old image would vanish from the page with no undo cue.
+ */
+export function ReplaceFrameDialog({ intent, onCancel, onReplace, onFree }: {
+  intent: { frameId: string; assetId: number; name: string } | null;
+  onCancel: () => void; onReplace: () => void; onFree: () => void;
+}) {
+  if (!intent) return null;
+  return <Dialog open onOpenChange={onCancel}><DialogContent className="confirm-dialog">
+    <DialogHeader>
+      <DialogTitle>That frame already has an image</DialogTitle>
+      <DialogDescription>
+        Replace it with {intent.name}, keeping the frame and its size, or leave the frame alone and drop {intent.name} onto the canvas as a free image?
+      </DialogDescription>
+    </DialogHeader>
+    <DialogFooter>
+      <Button variant="outline" onClick={onCancel}>Cancel</Button>
+      <Button variant="secondary" onClick={onFree}>Keep as free image</Button>
+      <Button onClick={onReplace}>Replace in frame</Button>
+    </DialogFooter>
+  </DialogContent></Dialog>;
+}
+
 /** Panel 7: Add New Custom Preset, plus Edit behind the row context menu. */
 export function PresetDialog({ draft, presets, onCancel, onSave }: {
   draft: { preset: Preset; mode: "create" | "edit" } | null; presets: Preset[];
