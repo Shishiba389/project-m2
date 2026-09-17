@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   clampBox, HANDLES, megabytes, presetById, ratioLabel, resolutionOf, resizeBox, snapBox,
   statusOf, warningReason,
-  type Asset, type Box, type Doc, type DupPolicy, type Format, type GalleryFilter, type Handle,
+  type Asset, type Box, type Doc, type DupPolicy, type Format, type GalleryFilter, type Handle, type ImagePlacement,
   type Preset, type Resolution, type Status, type WarningReason,
 } from "@/src/flow";
 
@@ -228,13 +228,14 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
 
 /* -------------------------------------------------------------------- editor */
 
-export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false }: {
+export function Editor({ asset, assets, selected, doc, zoom, compare, compareView, splitAt, overlay, guides, target, onBox, onPlacement, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false, editMode = "crop" }: {
   asset: Asset; assets: Asset[]; selected: number[]; doc: Doc; zoom: number;
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
-  onBox: (box: Box) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
+  onBox: (box: Box) => void; onPlacement: (placement: ImagePlacement) => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
   onImport: () => void; onDrop: (files: FileList) => void; onFit: (fit: Doc["fit"]) => void;
   onToggleGrid: () => void; onStep: (delta: number) => void;
   focusMode?: boolean;
+  editMode?: "image" | "crop" | "canvas";
 }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const activeThumb = useRef<HTMLButtonElement>(null);
@@ -247,10 +248,13 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   }, [asset.id]);
   const splitRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ mode: "move" | Handle; x: number; y: number; box: Box } | null>(null);
+  const imageDrag = useRef<{ x: number; y: number; placement: ImagePlacement } | null>(null);
   const [dropActive, setDropActive] = useState(false);
 
   const place = (box: Box) => onBox(clampBox(snapBox(box, doc.safeX, doc.safeY, { safe: guides.snapSafe, grid: guides.snapGrid })));
   const nudge = (dx: number, dy: number) => place({ ...doc.box, x: doc.box.x + dx, y: doc.box.y + dy });
+  const placement = asset.placement ?? { x: 0, y: 0, scale: 1 };
+  const placeImage = (next: ImagePlacement) => onPlacement({ x: next.x, y: next.y, scale: Math.min(5, Math.max(0.2, next.scale)) });
 
   /**
    * Moving the frame and resizing it from a handle share one gesture: capture
@@ -286,7 +290,7 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
   const resized = <div ref={canvasRef} className="canvas" style={canvasStyle}>
     {guides.grid && <div className="canvas-grid" aria-hidden="true" />}
     <div className="safe-area" style={{ inset: `${doc.safeY}% ${doc.safeX}%` }} />
-    <div className="frame" tabIndex={0} style={frameStyle}
+    <div className={`frame ${editMode === "crop" ? "frame-editing" : ""}`} tabIndex={editMode === "crop" ? 0 : -1} style={frameStyle}
       aria-label={`Placeholder frame for ${asset.name}. Drag to move, arrow keys to nudge, handles to resize.`}
       onKeyDown={(event) => {
         const amount = event.shiftKey ? 5 : 0.5;
@@ -296,10 +300,16 @@ export function Editor({ asset, assets, selected, doc, zoom, compare, compareVie
         if (event.key === "ArrowDown") { event.preventDefault(); nudge(0, amount); }
       }}
       onDoubleClick={() => onFit("Fill")}
-      {...dragProps("move")}>
-      <AssetImage asset={asset} fit={objectFitFor(doc.fit)} large />
-      <div className="frame-outline" aria-hidden="true" />
-      {HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={-1}
+      {...(editMode === "crop" ? dragProps("move") : {})}>
+      <div className={`image-layer ${editMode === "image" ? "image-editing" : ""}`} style={{ transform: `translate(${placement.x / doc.box.w * 100}%, ${placement.y / doc.box.h * 100}%) scale(${placement.scale})` }}
+        onPointerDown={(event) => { if (editMode !== "image") return; event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); imageDrag.current = { x: event.clientX, y: event.clientY, placement }; }}
+        onPointerMove={(event) => { const state = imageDrag.current; const rect = canvasRef.current?.getBoundingClientRect(); if (!state || !rect || editMode !== "image") return; placeImage({ ...state.placement, x: state.placement.x + (event.clientX - state.x) / rect.width * 100, y: state.placement.y + (event.clientY - state.y) / rect.height * 100 }); }}
+        onPointerUp={() => { imageDrag.current = null; }} onPointerCancel={() => { imageDrag.current = null; }}
+        onWheel={(event) => { if (editMode !== "image") return; event.preventDefault(); placeImage({ ...placement, scale: placement.scale * (event.deltaY < 0 ? 1.08 : 0.92) }); }}>
+        <AssetImage asset={asset} fit={objectFitFor(doc.fit)} large />
+      </div>
+      {editMode === "crop" && <div className="frame-outline" aria-hidden="true" />}
+      {editMode === "crop" && HANDLES.map((handle) => <span key={handle} role="slider" tabIndex={-1}
         aria-label={`Resize ${handle}`} aria-valuenow={Math.round(doc.box.w)}
         className={`frame-handle handle-${handle}`} {...dragProps(handle)} />)}
     </div>

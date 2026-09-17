@@ -79,12 +79,12 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
 
 check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
-  onBox={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  onBox={noop} onPlacement={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
   "frame-handle", "handle-nw", "handle-se", "handle-n", "handle-e", "filmstrip", "canvas-grid");
 
 check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
-  onBox={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  onBox={noop} onPlacement={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
   "Original", "Resized preview", "split-handle");
 
 check("review", <Review assets={assets.slice(2)} target={target} onOpen={noop} onFix={noop} onFixAll={noop} onRetry={noop} />,

@@ -800,8 +800,12 @@ body { background: var(--app); }
 .editor-toolbar-note { margin-left:auto; color:var(--ink-9); font-size:11px }
 
 .frame {
-  position: absolute; box-sizing: border-box; cursor: move; touch-action: none;
+  position: absolute; box-sizing: border-box; cursor: default; touch-action: none; overflow:hidden;
 }
+.frame-editing { cursor:move }
+.image-layer { position:absolute; inset:0; transform-origin:center; touch-action:none; will-change:transform }
+.image-layer.image-editing { cursor:grab; outline:1px solid color-mix(in srgb, var(--accent) 65%, transparent) }
+.image-layer.image-editing:active { cursor:grabbing }
 .frame .asset-image {
   width: 100%; height: 100%; transform: var(--flip, none);
   /* Fit leaves margins inside the frame; those must show the canvas colour,

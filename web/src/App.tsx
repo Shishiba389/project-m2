@@ -185,6 +185,13 @@ export function MinimaWorkspace() {
       : asset));
   }, [active, doc, setDoc]);
 
+  const setActivePlacement = useCallback((placement: import("@/src/flow").ImagePlacement) => {
+    if (!active || doc.templateLocked) return;
+    setAssets((current) => current.map((asset) => asset.id === active.id
+      ? { ...asset, placement, processed: true, fixed: false }
+      : asset));
+  }, [active, doc.templateLocked]);
+
   const fixAssets = useCallback((ids: number[]) => {
     const idSet = new Set(ids);
     setAssets((current) => current.map((asset) => idSet.has(asset.id) && !asset.corrupt ? { ...asset, fixed: true } : asset));
@@ -388,6 +395,7 @@ export function MinimaWorkspace() {
           aria-pressed={focusTool === tool} onClick={() => setFocusTool(tool)}>{tool[0].toUpperCase() + tool.slice(1)}</button>)}
         {focusTool === "image" && (["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
           aria-pressed={doc.fit === fit} onClick={() => setDoc((current) => ({ ...current, fit }))}>{fit}</button>)}
+        {focusTool === "image" && <><button onClick={() => setActivePlacement({ ...(active.placement ?? { x: 0, y: 0, scale: 1 }), scale: (active.placement?.scale ?? 1) / 1.1 })}>−</button><button onClick={() => setActivePlacement({ ...(active.placement ?? { x: 0, y: 0, scale: 1 }), scale: (active.placement?.scale ?? 1) * 1.1 })}>+</button><button onClick={() => setActivePlacement({ x: 0, y: 0, scale: 1 })}>Reset image</button></>}
         {focusTool === "crop" && <button onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Fill canvas</button>}
         {focusTool === "canvas" && <button aria-pressed={guides.grid} onClick={() => setGuides((current) => ({ ...current, grid: !current.grid }))}>Grid</button>}
       </div>
@@ -397,9 +405,9 @@ export function MinimaWorkspace() {
     <div className="focus-editor-host">
       <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom} compare={false}
         compareView="split" splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onBox={setActiveBox} onPlacement={setActivePlacement} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files) => importFiles(files, true)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
-        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode />
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} />
     </div>
     <button className="canvas-arrow right" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></button>
     <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
@@ -485,7 +493,7 @@ export function MinimaWorkspace() {
         onReview={() => goto("review")} onRemove={askRemoval} />}
       {screen === "editor" && <Editor asset={editorAsset} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onBox={setActiveBox} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onBox={setActiveBox} onPlacement={setActivePlacement} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files) => importFiles(files, true)}
         onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}

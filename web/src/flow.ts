@@ -93,6 +93,8 @@ function gcd(a: number, b: number): number {
 export type Format = "png" | "jpg" | "webp" | "tiff";
 export type Resolution = "large" | "medium" | "small";
 export type WarningReason = "aspect" | "safe";
+/** Manual image position inside a crop frame, in percent of the output canvas. */
+export type ImagePlacement = { x: number; y: number; scale: number };
 
 export type Asset = {
   id: number;
@@ -117,6 +119,8 @@ export type Asset = {
   corrupt: boolean;
   /** Independent result produced by EditorModeEngine for this image. */
   layout?: LayoutResult;
+  /** Per-image crop/pan state. It deliberately never changes the shared frame. */
+  placement?: ImagePlacement;
 };
 
 /** Ratio drift above this reads as a real mismatch rather than rounding. */

@@ -12,7 +12,7 @@
  */
 import { begin } from "@/src/selfcheck";
 import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
-import { outputName, type Asset, type Doc, type Format } from "@/src/flow";
+import { outputName, type Asset, type Doc, type Format, type ImagePlacement } from "@/src/flow";
 import { resizeRgba } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
 
@@ -29,6 +29,7 @@ export type FrameSpec = {
   align: { horizontal: "left" | "center" | "right"; vertical: "top" | "center" | "bottom" };
   flipH: boolean;
   flipV: boolean;
+  placement?: ImagePlacement;
 };
 
 export const specFromDoc = (doc: Doc): FrameSpec => ({
@@ -114,7 +115,13 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
       context.scale(spec.flipH ? -1 : 1, spec.flipV ? -1 : 1);
       context.translate(-cx, -cy);
     }
-    const dest = fitInto(bitmap.width, bitmap.height, frame, spec.fit, spec.align);
+    const baseDest = fitInto(bitmap.width, bitmap.height, frame, spec.fit, spec.align);
+    const placement = spec.placement ?? { x: 0, y: 0, scale: 1 };
+    const dest = {
+      w: baseDest.w * placement.scale, h: baseDest.h * placement.scale,
+      x: baseDest.x + (baseDest.w - baseDest.w * placement.scale) / 2 + placement.x / 100 * spec.width,
+      y: baseDest.y + (baseDest.h - baseDest.h * placement.scale) / 2 + placement.y / 100 * spec.height,
+    };
     const renderWidth = Math.max(1, Math.round(dest.w));
     const renderHeight = Math.max(1, Math.round(dest.h));
     const sourcePixels = sourceContext.getImageData(0, 0, bitmap.width, bitmap.height);
@@ -169,7 +176,7 @@ export async function runExport(
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
       if (!asset.file) throw new Error("no source file");
-      const assetSpec = asset.layout ? { ...spec, box: asset.layout.frame } : spec;
+      const assetSpec = { ...spec, ...(asset.layout ? { box: asset.layout.frame } : {}), placement: asset.placement };
       const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
       const custom = naming.customNames?.[asset.id]?.trim();
       let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
