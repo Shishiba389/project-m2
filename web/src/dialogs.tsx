@@ -55,7 +55,7 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
     <DialogHeader>
       <DialogTitle>Export {queue.length} images</DialogTitle>
       <DialogDescription>
-        Every available image is rendered at {canvas} into the current frame.
+        Every available image is rendered at {canvas} using its current image placement.
         Corrupt or missing source files are excluded.
       </DialogDescription>
     </DialogHeader>

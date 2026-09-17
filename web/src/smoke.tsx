@@ -80,18 +80,18 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
 
 check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
-  onElement={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
-  "canvas-scene", "page-render-clip", "selection-overlay", "image-layer", "rotation-handle", "editor-toolbar", "Rotate left", "Rotate right", "Flip H", "Flip V", "Lock ratio", "Edit image", "Crop", "filmstrip", "canvas-grid");
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  "canvas-scene", "page-render-clip", "selection-overlay", "image-layer", "rotation-handle", "editor-toolbar", "Rotate left", "Rotate right", "More", "Resize image from nw", "Edit image", "Crop", "filmstrip", "canvas-grid");
 
 check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
-  onElement={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
   "Original", "Resized preview", "split-handle");
 
 check("editor crop", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
-  onElement={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} focusMode editMode="crop" />,
-  "crop-overlay", "crop-window", "Resize crop nw");
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} focusMode editMode="crop" />,
+  "crop-overlay", "crop-window", "Resize crop from nw");
 
 check("review", <Review assets={assets.slice(2)} target={target} onOpen={noop} onFix={noop} onFixAll={noop} onRetry={noop} />,
   "Error Review", "Auto-fix scaling", "Re-run preset");
@@ -107,9 +107,9 @@ check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} preset
   scope="selected" scopeCount={3} selectedCount={3} totalCount={4} compare overlay={100} processing={false} progress={0}
   onPreset={noop} onDoc={noop} onGuides={noop} onScope={noop} onOverlay={noop} onApply={noop} onFocus={noop}
   onClose={noop} onResetGuides={noop} />,
-  "Resize Inspector", "Alignment matrix", "Flip H", "Guides", "Snap safe", "Canvas background",
+  "Resize Inspector", "Image fit alignment", "Guides", "Snap safe", "Canvas background",
   "Overlay opacity", "Apply resize to", "Apply to 3 images",
-  "Crop mask", "Reset crop", "Crop to safe area", "Top", "Right", "Bottom", "Left");
+  "Lock canvas settings");
 
 check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} canvas="1801 × 2600 px" onOptions={noop} onStart={noop} />);
 
@@ -166,13 +166,13 @@ console.assert(makeZip([]).byteLength === 22, "the batch zip writer is reachable
   console.assert((manyHtml.match(/class="asset-card /g) ?? []).length === 120, "gallery mounts only the first 120 cards");
   console.assert(manyHtml.includes("Load 120 more"), "large galleries expose progressive loading");
 }
-// The editor's export renders at the document's canvas size into its frame,
-// so the geometry the dialog promises is the geometry it writes.
+// The editor's export uses each image element's geometry and clips it to the
+// document page, so the geometry the dialog promises is the geometry it writes.
 {
   const spec = specFromDoc(doc);
   const frame = framePx(spec);
   console.assert(spec.width === doc.width && spec.height === doc.height, "the export canvas is the document canvas");
-  console.assert(frame.w === (doc.box.w / 100) * doc.width, "the frame is the placeholder, in pixels");
+  console.assert(frame.w === doc.width, "the default image element spans the output page");
   console.assert(fitInto(4000, 1000, frame, "contain").w <= frame.w + 0.001, "contain stays inside the frame");
   console.assert(encodableFormat("tiff") === "png", "TIFF degrades rather than writing an empty blob");
 }

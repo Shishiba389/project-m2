@@ -4,8 +4,8 @@
  * The dialog used to show an "Output folder" of C:\Products\MINIMA_Output and
  * run a timer that invented progress and invented failures. A browser cannot
  * write to a local path, so the only honest output is a download: every queued
- * image is rendered at the document's canvas size, into the document's
- * placeholder frame, then zipped.
+ * image is rendered into its own Canva-style element box, then clipped by the
+ * output page and zipped.
  *
  * This is the editor's geometry, which the user set by hand — not the batch
  * target framing, which is being built as its own engine.
@@ -14,7 +14,7 @@ import { begin } from "@/src/selfcheck";
 import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
 import { outputName, type Asset, type Doc, type Format } from "@/src/flow";
 import { fullCrop, fullPageImage, type ImageElement } from "@/src/image-geometry";
-import { resizeRgba } from "@/src/resize-core";
+import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
 
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -24,12 +24,8 @@ export type FrameSpec = {
   width: number;
   height: number;
   background: string;
-  /** The placeholder frame, in percent of the canvas. */
-  box: Rect;
   fit: "contain" | "cover" | "fill";
   align: { horizontal: "left" | "center" | "right"; vertical: "top" | "center" | "bottom" };
-  flipH: boolean;
-  flipV: boolean;
   element: ImageElement;
 };
 
@@ -37,24 +33,21 @@ export const specFromDoc = (doc: Doc): FrameSpec => ({
   width: doc.width,
   height: doc.height,
   background: doc.background,
-  box: doc.box,
   fit: doc.fit === "Fit" ? "contain" : doc.fit === "Fill" ? "cover" : "fill",
   align: {
     horizontal: doc.align?.includes("left") ? "left" : doc.align?.includes("right") ? "right" : "center",
     vertical: doc.align?.includes("top") ? "top" : doc.align?.includes("bottom") ? "bottom" : "center",
   },
-  flipH: doc.flipH,
-  flipV: doc.flipV,
   element: fullPageImage(),
 });
 
-/** The placeholder frame in canvas pixels. */
+/** An image element's destination box in output pixels. */
 export function framePx(spec: FrameSpec): Rect {
   return {
-    x: (spec.box.x / 100) * spec.width,
-    y: (spec.box.y / 100) * spec.height,
-    w: (spec.box.w / 100) * spec.width,
-    h: (spec.box.h / 100) * spec.height,
+    x: (spec.element.box.x / 100) * spec.width,
+    y: (spec.element.box.y / 100) * spec.height,
+    w: (spec.element.box.w / 100) * spec.width,
+    h: (spec.element.box.h / 100) * spec.height,
   };
 }
 
@@ -80,10 +73,15 @@ export function fitInto(srcW: number, srcH: number, frame: Rect, fit: FrameSpec[
 export const encodableFormat = (format: Format): OutFormat =>
   (format === "tiff" ? "png" : format);
 
+// The scaler keeps several linear-light buffers in memory. Refuse a render
+// before allocating them instead of freezing the browser tab.
+const MAX_RENDER_BYTES = 512 * 1024 * 1024;
+
 /* ------------------------------------------------------------------ browser */
 
 export async function renderFramed(file: File, spec: FrameSpec, format: OutFormat, quality: number,
   metadata: { dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" } = {}): Promise<Uint8Array> {
+  validateDimensions(spec.width, spec.height);
   const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   try {
     const sourceCanvas = document.createElement("canvas");
@@ -106,32 +104,32 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
 
     const frame = framePx(spec);
     context.save();
-    // The frame is a crop window, so anything Cover pushes past it is clipped.
+    // The output page is the crop boundary. The image element may freely sit
+    // outside it, just as it does in the editor.
     context.beginPath();
-    // Output is always clipped to its page. A legacy frame only supplies an
-    // explicit crop; image elements otherwise remain free to sit outside it.
     context.rect(0, 0, spec.width, spec.height);
     context.clip();
-    if (spec.flipH || spec.flipV || spec.element.box.rotation) {
+    if (spec.element.box.flipH || spec.element.box.flipV || spec.element.box.rotation) {
       const cx = (spec.element.box.x + spec.element.box.w / 2) / 100 * spec.width;
       const cy = (spec.element.box.y + spec.element.box.h / 2) / 100 * spec.height;
       context.translate(cx, cy);
-      context.scale(spec.element.box.flipH || spec.flipH ? -1 : 1, spec.element.box.flipV || spec.flipV ? -1 : 1);
+      context.scale(spec.element.box.flipH ? -1 : 1, spec.element.box.flipV ? -1 : 1);
       context.rotate(spec.element.box.rotation * Math.PI / 180);
       context.translate(-cx, -cy);
     }
-    const baseDest = fitInto(bitmap.width, bitmap.height, frame, spec.fit, spec.align);
-    const dest = {
-      x: spec.element.box.x / 100 * spec.width, y: spec.element.box.y / 100 * spec.height,
-      w: spec.element.box.w / 100 * spec.width, h: spec.element.box.h / 100 * spec.height,
-    };
-    const renderWidth = Math.max(1, Math.round(dest.w));
-    const renderHeight = Math.max(1, Math.round(dest.h));
     const crop = spec.element.crop ?? fullCrop();
-    const sourceX = Math.floor(crop.left * bitmap.width);
-    const sourceY = Math.floor(crop.top * bitmap.height);
     const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
     const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
+    // This is the same object-fit calculation as the preview: fit the cropped
+    // source into the selected element box, then let the page clip the result.
+    const dest = fitInto(sourceWidth, sourceHeight, frame, spec.fit, spec.align);
+    const renderWidth = Math.max(1, Math.round(dest.w));
+    const renderHeight = Math.max(1, Math.round(dest.h));
+    validateDimensions(renderWidth, renderHeight);
+    const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, renderWidth, renderHeight);
+    if (peakBytes > MAX_RENDER_BYTES) throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory`);
+    const sourceX = Math.floor(crop.left * bitmap.width);
+    const sourceY = Math.floor(crop.top * bitmap.height);
     const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
     const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, renderWidth, renderHeight);
     const resizedCanvas = document.createElement("canvas");
@@ -184,7 +182,7 @@ export async function runExport(
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
       if (!asset.file) throw new Error("no source file");
-      const assetSpec = { ...spec, ...(asset.layout ? { box: asset.layout.frame } : {}), element: asset.element };
+      const assetSpec = { ...spec, element: asset.element };
       const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
       const custom = naming.customNames?.[asset.id]?.trim();
       let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
@@ -200,6 +198,9 @@ export async function runExport(
     }
     progress.done += 1;
     onProgress({ ...progress, failed: [...progress.failed] });
+    // Give the browser a chance to paint progress and receive Cancel between
+    // expensive files. The pixel work remains deterministic and sequential.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
   return { zip: makeZip(entries), progress, stopped: false };
 }
@@ -212,14 +213,14 @@ export function demo() {
   const finish = begin();
   const spec: FrameSpec = {
     width: 1000, height: 2000, background: "#fff",
-    box: { x: 10, y: 20, w: 80, h: 60 }, fit: "contain",
-    align: { horizontal: "center", vertical: "center" }, flipH: false, flipV: false, element: fullPageImage(),
+    fit: "contain", align: { horizontal: "center", vertical: "center" },
+    element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 10, y: 20, w: 80, h: 60 } },
   };
 
   const frame = framePx(spec);
   console.assert(frame.x === 100 && frame.y === 400, "the frame origin is percent of each axis");
   console.assert(frame.w === 800 && frame.h === 1200, "and so is its size");
-  console.assert(framePx({ ...spec, box: { x: 0, y: 0, w: 100, h: 100 } }).w === 1000, "a full frame is the whole canvas");
+  console.assert(framePx({ ...spec, element: fullPageImage() }).w === 1000, "a full image element spans the canvas");
 
   // contain fits whole, cover overflows, fill distorts — the same three cases
   // object-fit gives the canvas preview, so the file matches the screen.

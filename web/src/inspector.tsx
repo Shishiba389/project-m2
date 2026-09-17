@@ -1,4 +1,4 @@
-import { Expand, FlipHorizontal, FlipVertical, RotateCcw, Sparkles, X } from "lucide-react";
+import { Expand, RotateCcw, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Progress } from "@/components/ui/progress";
@@ -6,12 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import type { Guides } from "@/src/screens";
-import {
-  anchor, boxFromMargins, fullBox, marginsOf, ratioLabel, safeBox,
-  type Align, type Asset, type Doc, type Margins, type Preset, type Scope,
-} from "@/src/flow";
-
-const round = (value: number) => Math.round(value * 10) / 10;
+import { ratioLabel, type Align, type Asset, type Doc, type Preset, type Scope } from "@/src/flow";
 
 const ALIGNMENTS: Align[] = ["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"];
 
@@ -30,7 +25,7 @@ export function Inspector({
   onOverlay: (value: number) => void;
   onApply: () => void; onFocus: () => void; onClose: () => void; onResetGuides: () => void;
 }) {
-  /** Canvas rules stay independent from the user's custom frame geometry. */
+  /** Canvas rules stay independent from each image's editable geometry. */
   const patchDoc = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
   const reframe = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
   const setDimension = (edge: "width" | "height", value: number) => onDoc((current) => {
@@ -39,10 +34,6 @@ export function Inspector({
       ? { ...current, width: value, height: current.lock ? Math.round(value / current.ratio) : current.height }
       : { ...current, height: value, width: current.lock ? Math.round(value * current.ratio) : current.width };
   });
-  const margins = marginsOf(doc.box);
-  const setMargin = (side: keyof Margins, value: number) =>
-    onDoc((current) => ({ ...current, box: boxFromMargins({ ...marginsOf(current.box), [side]: value }) }));
-
   return <aside className="inspector" aria-label="Resize inspector">
     <div className="inspector-heading">
       <strong>Resize Inspector</strong>
@@ -71,41 +62,19 @@ export function Inspector({
       </label>
       <label className="check-row template-lock-row">
         <Checkbox checked={Boolean(doc.templateLocked)} onCheckedChange={(value) => onDoc((current) => ({ ...current, templateLocked: Boolean(value) }))} />
-        Lock crop layout
+        Lock canvas settings
       </label>
-      {doc.templateLocked && <p className="inspector-note">Frame is locked. Import, fit and export remain available.</p>}
+      {doc.templateLocked && <p className="inspector-note">Canvas settings are locked. Image editing, import and export remain available.</p>}
 
       <label className="field-label">How the image fits the page</label>
       <div className="segmented">{(["Fit", "Fill", "Stretch"] as const).map((mode) =>
         <button key={mode} className={doc.fit === mode ? "active" : ""} onClick={() => patchDoc({ fit: mode })}>{mode}</button>)}
       </div>
 
-      {/* The placeholder frame: nine anchors, numeric margins, and one button
-          to take it to the canvas edges. Every image in the queue uses it. */}
-      <label className="field-label">Crop mask</label>
-      <div className="frame-actions">
-        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: fullBox() }))}>Reset crop</button>
-        <button disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, box: safeBox(current.safeX, current.safeY) }))}>Crop to safe area</button>
-      </div>
-      <div className="margin-grid">
-        {([["top", "Top"], ["right", "Right"], ["bottom", "Bottom"], ["left", "Left"]] as [keyof Margins, string][])
-          .map(([side, label]) => <label key={side}>
-            <span>{label}</span>
-            <input type="number" min={0} max={96} step={0.5} aria-label={`${label} margin, percent`}
-              disabled={Boolean(doc.templateLocked)} value={round(margins[side])} onChange={(event) => setMargin(side, Number(event.target.value))} />
-          </label>)}
-      </div>
-      <p className="inspector-note">Frame {Math.round((doc.box.w / 100) * doc.width)} × {Math.round((doc.box.h / 100) * doc.height)} px</p>
-
-      <label className="field-label">Alignment matrix</label>
+      <label className="field-label">Image fit alignment</label>
       <div className="alignment-grid">{ALIGNMENTS.map((position) =>
         <button key={position} className={position === doc.align ? "active" : ""} aria-label={`Align ${position.replace("-", " ")}`} title={`Align ${position.replace("-", " ")}`}
-          disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, align: position, box: anchor(position, current.box, current.safeX, current.safeY) }))}><span /></button>)}
-      </div>
-      {/* Panel 3: flip sits with the alignment matrix. */}
-      <div className="flip-row">
-        <button disabled={Boolean(doc.templateLocked)} className={doc.flipH ? "active" : ""} aria-pressed={doc.flipH} onClick={() => onDoc((current) => ({ ...current, flipH: !current.flipH }))}><FlipHorizontal /> Flip H</button>
-        <button disabled={Boolean(doc.templateLocked)} className={doc.flipV ? "active" : ""} aria-pressed={doc.flipV} onClick={() => onDoc((current) => ({ ...current, flipV: !current.flipV }))}><FlipVertical /> Flip V</button>
+          disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, align: position }))}><span /></button>)}
       </div>
 
       <div className="slider-label"><span>Safe area · vertical</span><strong>{doc.safeY.toFixed(2)}%</strong></div>

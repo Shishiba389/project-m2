@@ -12,5 +12,16 @@ export default defineConfig({
   base: `/${(process.env.BASE_PATH ?? "project-m2").replace(/^\/+|\/+$/g, "")}/`,
   plugins: [react(), tailwindcss()],
   resolve: { alias: { "@": path.resolve(__dirname, ".") } },
-  build: { outDir: "../docs", emptyOutDir: true },
+  build: {
+    outDir: "../docs", emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ["react", "react-dom", "react-dom/client"],
+          radix: ["radix-ui"],
+          icons: ["lucide-react"],
+        },
+      },
+    },
+  },
 });

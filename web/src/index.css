@@ -748,7 +748,7 @@ body { background: var(--app); }
 .inspector-fold > *:not(summary) { margin-top: 7px }
 
 /* ============================================================================
-   The placeholder frame.
+   Legacy diagnostic rectangle styles.
 
    The old model sized an object box from the image's own ratio, so it could
    only ever be dragged around and had four corner handles. The frame is now
@@ -797,7 +797,7 @@ body { background: var(--app); }
 .editor-toolbar-group, .focus-toolbar-group { display:flex; align-items:center; gap:2px; padding:3px; border:1px solid var(--line-5); border-radius:6px; background:var(--control) }
 .contextual-toolbar { min-width:0; display:flex; align-items:center; gap:5px; overflow-x:auto; scrollbar-width:thin }
 .toolbar-segment { display:flex; flex:0 0 auto; align-items:center; gap:2px; padding:3px; border:1px solid var(--line-5); border-radius:6px; background:var(--control) }
-.toolbar-segment button { min-height:30px; border:0; border-radius:4px; padding:5px 9px; color:var(--ink-8); background:transparent; font-size:11px; white-space:nowrap; cursor:pointer }
+.toolbar-segment button { min-height:34px; border:0; border-radius:4px; padding:6px 9px; color:var(--ink-8); background:transparent; font-size:11px; white-space:nowrap; cursor:pointer }
 .toolbar-segment button:hover, .toolbar-segment button:focus-visible, .toolbar-segment button.active, .toolbar-segment button[aria-pressed="true"] { background:var(--fill-strong); color:var(--on-strong); outline:2px solid transparent; outline-offset:2px }
 .toolbar-segment button:focus-visible { outline-color:var(--ring) }
 .focus-contextual-toolbar { flex:0 1 auto; max-width:min(62vw, 920px) }
@@ -810,6 +810,7 @@ body { background: var(--app); }
 .page-render-image .asset-image, .selection-overlay .asset-image,
 .page-render-image .product-placeholder, .selection-overlay .product-placeholder { width:100%; height:100%; min-height:0; background:transparent }
 .selection-overlay { position:absolute; inset:0; z-index:2; overflow:visible; pointer-events:none }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0 }
 .selection-overlay.image-mode .image-layer { pointer-events:auto }
 .selection-overlay.crop-mode .crop-overlay { pointer-events:auto }
 .crop-overlay { position:absolute; transform-origin:center; touch-action:none }
@@ -847,7 +848,7 @@ body { background: var(--app); }
 }
 
 .frame-handle {
-  position: absolute; z-index: 2; background: #fff;
+  position: absolute; z-index: 2; box-sizing:border-box; width:11px; height:11px; padding:0; background: #fff;
   border: 1.5px solid var(--frame-line); touch-action: none;
 }
 /* Corners: round, and they move two edges. */
@@ -872,6 +873,7 @@ body { background: var(--app); }
 @media (pointer: coarse) {
   /* Fingers need a bigger target than the visual handle. */
   .frame-handle::after { content: ""; position: absolute; inset: -12px }
+  .toolbar-segment button { min-height:44px; padding-inline:12px }
 }
 
 /* Frame controls in the inspector. */

@@ -15,7 +15,7 @@ import {
 import { inspectSources, summarise, toSources, type BatchSource } from "@/src/batch";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
-import { applyRecipe, applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
+import { applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
 import {
   AssetImage, ContextualToolbar, defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
   Review, SettingsScreen, type CompareView, type EditorTool, type Guides, type Theme,
@@ -33,6 +33,13 @@ const EMPTY_EDITOR_ASSET: Asset = {
   processed: false, overflow: false, fixed: false, corrupt: false, element: fullPageImage(),
 };
 type ElementHistoryEntry = { assetId: number; before: ImageElement; after: ImageElement };
+const sameElement = (left: ImageElement, right: ImageElement) =>
+  left.crop?.left === right.crop?.left && left.crop?.top === right.crop?.top
+  && left.crop?.right === right.crop?.right && left.crop?.bottom === right.crop?.bottom
+  && (left.crop === null) === (right.crop === null)
+  && left.box.x === right.box.x && left.box.y === right.box.y && left.box.w === right.box.w && left.box.h === right.box.h
+  && left.box.rotation === right.box.rotation && left.box.flipH === right.box.flipH && left.box.flipV === right.box.flipV
+  && left.box.lockedRatio === right.box.lockedRatio;
 
 /** Undo/redo over the document snapshot only — navigation is never undoable. */
 function useHistory(initial: Doc) {
@@ -76,6 +83,8 @@ export function MinimaWorkspace() {
   const [focusTool, setFocusTool] = useState<EditorTool>("image");
   const [cropSession, setCropSession] = useState<{ assetId: number; crop: CropRect | null } | null>(null);
   const [elementHistory, setElementHistory] = useState({ past: [] as ElementHistoryEntry[], future: [] as ElementHistoryEntry[] });
+  const elementTransaction = useRef<{ assetId: number; before: ImageElement } | null>(null);
+  const commitElementTransactionRef = useRef<() => void>(() => {});
   const [railOpen, setRailOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [zoom, setZoom] = useState(100);
@@ -123,12 +132,20 @@ export function MinimaWorkspace() {
   const scoped = useMemo(() => scope === "all" ? assets : scope === "selected" ? assets.filter((asset) => selectedSet.has(asset.id)) : assets.filter((asset) => asset.id === activeId), [assets, scope, selectedSet, activeId]);
   const flagged = useMemo(() => assets.filter((asset) => ["Warning", "Error"].includes(statusOf(asset, target))), [assets, target]);
 
+  /** Close a crop transaction while retaining the accepted crop. */
+  const finishCrop = useCallback(() => {
+    commitElementTransactionRef.current();
+    setCropSession(null);
+    setFocusTool("image");
+  }, []);
+
   /** The only screen navigator. Modifiers that need the canvas force the editor. */
   const goto = useCallback((next: Screen) => {
+    finishCrop();
     setScreen(next);
     if (next === "gallery" || next === "editor") setImageScreen(next);
     if (next !== "editor") setCompare(false);
-  }, []);
+  }, [finishCrop]);
 
   const touch = useCallback((message = "") => {
     setSaving(true);
@@ -136,14 +153,12 @@ export function MinimaWorkspace() {
     window.setTimeout(() => setSaving(false), 700);
   }, []);
 
-  /**
-   * The placeholder frame belongs to the batch, not to one image: every file in
-   * the queue is laid out in the same frame, so switching images leaves it be.
-   */
+  /** Opening another asset commits any current crop before changing selection. */
   const openEditor = useCallback((asset: Asset) => {
+    finishCrop();
     setActiveId(asset.id);
     goto("editor");
-  }, [goto]);
+  }, [finishCrop, goto]);
 
   const chooseAsset = useCallback((asset: Asset, multi = false, range = false) => {
     setActiveId(asset.id);
@@ -179,54 +194,73 @@ export function MinimaWorkspace() {
     touch(`Recipe v${recipe.version} applied to ${ids.size} image${ids.size === 1 ? "" : "s"}`);
   }, [doc, processing, scoped, touch]);
 
-  const setActiveBox = useCallback((box: Doc["box"]) => {
-    if (doc.templateLocked) return;
-    setDoc((current) => ({ ...current, box }));
-    if (!active) return;
-    const recipe = createRecipe({ ...doc, box });
-    setAssets((current) => current.map((asset) => asset.id === active.id
-      ? { ...asset, processed: true, fixed: false, layout: applyRecipe(asset, recipe, box) }
-      : asset));
-  }, [active, doc, setDoc]);
-
   const setActiveElement = useCallback((element: ImageElement) => {
-    if (!active || doc.templateLocked) return;
-    if (JSON.stringify(element) === JSON.stringify(active.element)) return;
+    if (!active) return;
+    const currentAsset = assetsRef.current.find((asset) => asset.id === active.id) ?? active;
+    if (sameElement(element, currentAsset.element)) return;
+    const next = assetsRef.current.map((asset) => asset.id === active.id ? { ...asset, element, processed: true, fixed: false } : asset);
+    assetsRef.current = next;
+    setAssets(next);
+  }, [active]);
+  const beginElementTransaction = useCallback(() => {
+    if (!active || elementTransaction.current) return;
+    const current = assetsRef.current.find((asset) => asset.id === active.id) ?? active;
+    elementTransaction.current = { assetId: active.id, before: current.element };
+  }, [active]);
+  const commitElementTransaction = useCallback(() => {
+    const transaction = elementTransaction.current;
+    if (!transaction) return;
+    elementTransaction.current = null;
+    const after = assetsRef.current.find((asset) => asset.id === transaction.assetId)?.element;
+    if (!after || sameElement(transaction.before, after)) return;
     setElementHistory((history) => ({
-      past: [...history.past, { assetId: active.id, before: active.element, after: element }].slice(-60), future: [],
+      past: [...history.past, { assetId: transaction.assetId, before: transaction.before, after }].slice(-60), future: [],
     }));
-    setAssets((current) => current.map((asset) => asset.id === active.id ? { ...asset, element, processed: true, fixed: false } : asset));
-  }, [active, doc.templateLocked]);
+  }, []);
+  commitElementTransactionRef.current = commitElementTransaction;
+  const discardElementTransaction = useCallback(() => { elementTransaction.current = null; }, []);
+  const applyElementAction = useCallback((element: ImageElement) => {
+    beginElementTransaction();
+    setActiveElement(element);
+    commitElementTransaction();
+  }, [beginElementTransaction, commitElementTransaction, setActiveElement]);
   const undo = useCallback(() => {
+    commitElementTransaction();
     const entry = elementHistory.past[elementHistory.past.length - 1];
     if (!entry) { undoDocument(); return; }
-    setAssets((current) => current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.before } : asset));
+    const next = assetsRef.current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.before } : asset);
+    assetsRef.current = next; setAssets(next);
     setElementHistory((history) => ({ past: history.past.slice(0, -1), future: [entry, ...history.future] }));
-  }, [elementHistory.past, undoDocument]);
+  }, [commitElementTransaction, elementHistory.past, undoDocument]);
   const redo = useCallback(() => {
+    commitElementTransaction();
     const entry = elementHistory.future[0];
     if (!entry) { redoDocument(); return; }
-    setAssets((current) => current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.after } : asset));
+    const next = assetsRef.current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.after } : asset);
+    assetsRef.current = next; setAssets(next);
     setElementHistory((history) => ({ past: [...history.past, entry].slice(-60), future: history.future.slice(1) }));
-  }, [elementHistory.future, redoDocument]);
+  }, [commitElementTransaction, elementHistory.future, redoDocument]);
   const canUndo = elementHistory.past.length > 0 || canUndoDocument;
   const canRedo = elementHistory.future.length > 0 || canRedoDocument;
   const startCrop = useCallback(() => {
-    if (!active || doc.templateLocked) return;
+    if (!active) return;
+    beginElementTransaction();
     setCropSession((current) => current?.assetId === active.id ? current : { assetId: active.id, crop: active.element.crop ? { ...active.element.crop } : null });
-  }, [active, doc.templateLocked]);
+  }, [active, beginElementTransaction]);
   const resetActiveCrop = useCallback(() => {
-    if (!active || doc.templateLocked) return;
+    if (!active) return;
     setActiveElement(resetCrop(active.element));
-  }, [active, doc.templateLocked, setActiveElement]);
+  }, [active, setActiveElement]);
   const cancelCrop = useCallback(() => {
-    if (!cropSession || doc.templateLocked) return;
-    setAssets((current) => current.map((asset) => asset.id === cropSession.assetId
+    if (!cropSession) return;
+    const next = assetsRef.current.map((asset) => asset.id === cropSession.assetId
       ? { ...asset, element: { ...asset.element, crop: cropSession.crop ? { ...cropSession.crop } : null } }
-      : asset));
+      : asset);
+    assetsRef.current = next; setAssets(next);
+    discardElementTransaction();
     setCropSession(null);
-  }, [cropSession, doc.templateLocked]);
-  const finishCrop = useCallback(() => setCropSession(null), []);
+    setFocusTool("image");
+  }, [cropSession, discardElementTransaction]);
 
   const fixAssets = useCallback((ids: number[]) => {
     const idSet = new Set(ids);
@@ -326,8 +360,8 @@ export function MinimaWorkspace() {
   }, [doc.presetId, setDoc, touch]);
 
   /**
-   * The export renders for real: each queued image is drawn at the document's
-   * canvas size into the placeholder frame, then the batch is zipped and
+   * The export renders for real: each queued image is drawn through its own
+   * element geometry onto the document page, then the batch is zipped and
    * downloaded. A browser cannot write to a local folder, so a download is the
    * only honest output.
    */
@@ -381,7 +415,10 @@ export function MinimaWorkspace() {
       if (mod && event.shiftKey && event.key.toLowerCase() === "f") { event.preventDefault(); if (screen !== "editor") goto("editor"); setFocus((value) => value ? false : "gallery"); return; }
       if (mod && event.shiftKey && event.key.toLowerCase() === "z") { event.preventDefault(); redo(); return; }
       if (mod && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
-      if (event.key === "Escape") { setFocus(false); return; }
+      if (event.key === "Escape") {
+        if (cropSession) { event.preventDefault(); cancelCrop(); return; }
+        setFocus(false); return;
+      }
       if (typing) return;
       if (mod && event.key.toLowerCase() === "a" && screen === "gallery") { event.preventDefault(); setSelected(visible.map((asset) => asset.id)); return; }
       if (mod && event.key === "Backspace") { event.preventDefault(); askRemoval(false); return; }
@@ -392,18 +429,19 @@ export function MinimaWorkspace() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-  }, [active, askRemoval, goto, openEditor, redo, screen, undo, visible]);
+  }, [active, askRemoval, cancelCrop, cropSession, goto, openEditor, redo, screen, undo, visible]);
 
   const step = useCallback((delta: number) => {
+    finishCrop();
     setActiveId((current) => {
       const at = assets.findIndex((asset) => asset.id === current);
       return assets[(at + delta + assets.length) % assets.length]?.id ?? current;
     });
-  }, [assets]);
+  }, [assets, finishCrop]);
 
   if (focus === "gallery") return <main className="focus-workspace focus-gallery-workspace">
     <header className="focus-toolbar" aria-label="Focus gallery toolbar">
-      <Button variant="ghost" size="sm" onClick={() => setFocus(false)}><ArrowLeft /> Exit focus</Button>
+      <Button variant="ghost" size="sm" onClick={() => { finishCrop(); setFocus(false); }}><ArrowLeft /> Exit focus</Button>
       <div className="focus-title"><strong>Focus gallery</strong><span>Select an image to edit on the canvas</span></div>
       <Button variant="secondary" size="sm" onClick={() => filesInput.current?.click()}><Upload /> Import</Button>
     </header>
@@ -411,7 +449,7 @@ export function MinimaWorkspace() {
       <header><span>{assets.length} image{assets.length === 1 ? "" : "s"}</span><strong>Choose an image to open its canvas</strong></header>
       <div className="focus-gallery-strip">{assets.map((item) => <button key={item.id}
         className={item.id === active.id ? "active" : ""} aria-current={item.id === active.id ? "true" : undefined}
-        onClick={() => { setActiveId(item.id); setFocus("editor"); }}>
+        onClick={() => { finishCrop(); setActiveId(item.id); setFocus("editor"); }}>
         <AssetImage asset={item} fit="cover" /><span>{item.name}</span>
       </button>)}</div>
     </section>
@@ -419,7 +457,7 @@ export function MinimaWorkspace() {
 
   if (focus === "editor" && hasActive) return <main className="focus-workspace">
     <header className="focus-toolbar" aria-label="Focus mode toolbar">
-      <Button variant="ghost" size="sm" onClick={() => setFocus("gallery")}><ArrowLeft /> Gallery</Button>
+      <Button variant="ghost" size="sm" onClick={() => { finishCrop(); setFocus("gallery"); }}><ArrowLeft /> Gallery</Button>
       <div className="focus-title"><strong>{active.name}</strong><span>Editor focus mode</span></div>
       <div className="focus-toolbar-group" role="group" aria-label="Image navigation">
         <Button variant="ghost" size="icon" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></Button>
@@ -427,18 +465,18 @@ export function MinimaWorkspace() {
         <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
       </div>
       <ContextualToolbar className="focus-contextual-toolbar" mode={focusTool} onMode={setFocusTool} element={active.element} fit={doc.fit}
-        onFit={(fit) => setDoc((current) => ({ ...current, fit }))} onReplace={() => filesInput.current?.click()} onElement={setActiveElement}
+        onFit={(fit) => setDoc((current) => ({ ...current, fit }))} onReplace={() => filesInput.current?.click()} onElement={applyElementAction}
         onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} grid={guides.grid} />
-      <Button variant="secondary" size="sm" onClick={() => { setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
-      <Button variant="ghost" size="icon" aria-label="Close focus mode" onClick={() => setFocus(false)}>×</Button>
+      <Button variant="secondary" size="sm" onClick={() => { finishCrop(); setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
+      <Button variant="ghost" size="icon" aria-label="Close focus mode" onClick={() => { finishCrop(); setFocus(false); }}>×</Button>
     </header>
     <div className="focus-editor-host">
       <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom} compare={false}
         compareView="split" splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onElement={setActiveElement} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onElement={setActiveElement} onElementAction={applyElementAction} onElementStart={beginElementTransaction} onElementEnd={commitElementTransaction} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files) => importFiles(files, true)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
-        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} />
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} cropActive={Boolean(cropSession)} />
     </div>
     <button className="canvas-arrow right" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></button>
     <button className="canvas-arrow left" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></button>
@@ -524,10 +562,10 @@ export function MinimaWorkspace() {
         onReview={() => goto("review")} onRemove={askRemoval} />}
       {screen === "editor" && <Editor asset={editorAsset} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onElement={setActiveElement} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onElement={setActiveElement} onElementAction={applyElementAction} onElementStart={beginElementTransaction} onElementEnd={commitElementTransaction} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files) => importFiles(files, true)}
         onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
-        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} cropActive={Boolean(cropSession)} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
 

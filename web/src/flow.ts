@@ -116,7 +116,7 @@ export type Asset = {
   fixed: boolean;
   /** Unreadable file; never resolvable by re-running the preset. */
   corrupt: boolean;
-  /** Independent result produced by EditorModeEngine for this image. */
+  /** Derived batch diagnostic; never used as editable or export geometry. */
   layout?: LayoutResult;
   /**
    * The image's canonical editable geometry. The output page never owns this:
@@ -308,7 +308,7 @@ function splitAlign(align: Align): ["top" | "middle" | "bottom", "left" | "cente
 }
 
 /**
- * The eight handles of the placeholder frame: four corners and four edges.
+ * The eight handles of a diagnostic rectangle: four corners and four edges.
  * Corner handles move two edges, edge handles move one.
  */
 export type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
@@ -447,10 +447,7 @@ export type Doc = {
   safeX: number;
   safeY: number;
   background: string;
-  flipH: boolean;
-  flipV: boolean;
-  box: Box;
-  /** Locks the frame/layout while still allowing image import and export. */
+  /** Locks page settings while keeping image import and export available. */
   templateLocked?: boolean;
 };
 
@@ -462,9 +459,7 @@ export function docFromPreset(preset: Preset): Doc {
     presetId: preset.id, width: preset.width, height: preset.height, lock: true,
     ratio: preset.width / preset.height,
     fit: preset.fit, align: preset.align, safeX: preset.safeX, safeY: preset.safeY,
-    background: preset.background, flipH: false, flipV: false,
-    // Safe area remains a guide; the default image element fills the page.
-    box: fullBox(),
+    background: preset.background,
   };
 }
 
@@ -587,7 +582,7 @@ export function demo() {
   console.assert(anchor("center", box, 10, 5).x === 30, "centre ignores the inset");
   console.assert(anchor("right", box, 10, 5).y === 30, "single-axis alignment centres the other axis");
 
-  // The placeholder frame: eight handles, margins, clamping.
+  // Diagnostic rectangle geometry: eight handles, margins, clamping.
   const frame: Box = { x: 20, y: 20, w: 60, h: 60 };
   console.assert(resizeBox(frame, "e", 10, 0).w === 70, "the east handle widens");
   console.assert(resizeBox(frame, "e", 10, 0).x === 20, "and leaves the left edge alone");
@@ -624,7 +619,7 @@ export function demo() {
   console.assert(fullBox().w === 100 && fullBox().x === 0, "the full frame spans the canvas");
   console.assert(HANDLES.length === 8, "eight handles, not four");
   console.assert(safeBox(10, 5).x === 10 && safeBox(10, 5).w === 80, "a preset frame is its safe area");
-  console.assert(docFromPreset(zalando).box.w === 100, "a loaded preset begins with a full-page image element");
+  console.assert(!("box" in docFromPreset(zalando)), "a preset owns page settings, not image geometry");
 
   // Snapping only bites near a target, and only for the guides that are on.
   console.assert(snapBox({ x: 10.5, y: 50, w: 40, h: 40 }, 10, 5).x === 10, "near edge snaps");

@@ -1,4 +1,4 @@
-import type { Align, Asset, Box, Doc, Fit } from "@/src/flow";
+import { fullBox, type Align, type Asset, type Box, type Doc, type Fit } from "@/src/flow";
 
 export type EditRecipe = {
   version: 1;
@@ -34,7 +34,9 @@ export function createRecipe(doc: Doc): EditRecipe {
     canvas: { width: doc.width, height: doc.height, aspectRatio: [doc.width, doc.height] },
     fitMode: fitMode(doc.fit), alignment: splitAlign(doc.align), relativeOffset: { xPercent: 0, yPercent: 0 },
     safeArea: { unit: "percent", top: doc.safeY, right: doc.safeX, bottom: doc.safeY, left: doc.safeX },
-    frame: { ...doc.box }, background: doc.background,
+    // A recipe diagnoses the output page. Individual image placement belongs
+    // exclusively to asset.element and must never be copied back into Doc.
+    frame: fullBox(), background: doc.background,
   };
 }
 
