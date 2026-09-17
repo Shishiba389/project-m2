@@ -9,7 +9,7 @@
  */
 
 import { begin } from "@/src/selfcheck";
-import type { ImageElement } from "@/src/image-geometry";
+import { fullPageImage, type ImageElement } from "@/src/image-geometry";
 import type { LayoutResult } from "@/src/editor-engine";
 
 export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
@@ -95,8 +95,6 @@ export type Format = "png" | "jpg" | "webp" | "tiff";
 export type Resolution = "large" | "medium" | "small";
 export type WarningReason = "aspect" | "safe";
 /** Manual image position inside a crop frame, in percent of the output canvas. */
-export type ImagePlacement = { x: number; y: number; scale: number };
-
 export type Asset = {
   id: number;
   name: string;
@@ -120,10 +118,11 @@ export type Asset = {
   corrupt: boolean;
   /** Independent result produced by EditorModeEngine for this image. */
   layout?: LayoutResult;
-  /** Per-image crop/pan state. It deliberately never changes the shared frame. */
-  placement?: ImagePlacement;
-  /** Canva-style independent element geometry; placement is retained only for migration. */
-  element?: ImageElement;
+  /**
+   * The image's canonical editable geometry. The output page never owns this:
+   * an element can sit wholly or partly outside the page.
+   */
+  element: ImageElement;
 };
 
 /** Ratio drift above this reads as a real mismatch rather than rounding. */
@@ -242,6 +241,7 @@ export function mergeImport(
       overflow: false,
       fixed: false,
       corrupt: Boolean(file.corrupt),
+      element: fullPageImage(),
     };
     const clash = taken.has(file.name);
 
@@ -510,7 +510,7 @@ export function demo() {
   const finish = begin();
   const zalando = presetById("zalando");
   const square = presetById("amazon");
-  const base: Asset = { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false };
+  const base: Asset = { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false, element: fullPageImage() };
 
   // Status is derived, never stored.
   console.assert(statusOf(base, zalando) === "Pending", "unprocessed reads Pending");

@@ -12,7 +12,8 @@
  */
 import { begin } from "@/src/selfcheck";
 import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
-import { outputName, type Asset, type Doc, type Format, type ImagePlacement } from "@/src/flow";
+import { outputName, type Asset, type Doc, type Format } from "@/src/flow";
+import { fullCrop, fullPageImage, type ImageElement } from "@/src/image-geometry";
 import { resizeRgba } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
 
@@ -29,7 +30,7 @@ export type FrameSpec = {
   align: { horizontal: "left" | "center" | "right"; vertical: "top" | "center" | "bottom" };
   flipH: boolean;
   flipV: boolean;
-  placement?: ImagePlacement;
+  element: ImageElement;
 };
 
 export const specFromDoc = (doc: Doc): FrameSpec => ({
@@ -44,6 +45,7 @@ export const specFromDoc = (doc: Doc): FrameSpec => ({
   },
   flipH: doc.flipH,
   flipV: doc.flipV,
+  element: fullPageImage(),
 });
 
 /** The placeholder frame in canvas pixels. */
@@ -106,26 +108,32 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
     context.save();
     // The frame is a crop window, so anything Cover pushes past it is clipped.
     context.beginPath();
-    context.rect(frame.x, frame.y, frame.w, frame.h);
+    // Output is always clipped to its page. A legacy frame only supplies an
+    // explicit crop; image elements otherwise remain free to sit outside it.
+    context.rect(0, 0, spec.width, spec.height);
     context.clip();
-    if (spec.flipH || spec.flipV) {
-      const cx = frame.x + frame.w / 2;
-      const cy = frame.y + frame.h / 2;
+    if (spec.flipH || spec.flipV || spec.element.box.rotation) {
+      const cx = (spec.element.box.x + spec.element.box.w / 2) / 100 * spec.width;
+      const cy = (spec.element.box.y + spec.element.box.h / 2) / 100 * spec.height;
       context.translate(cx, cy);
-      context.scale(spec.flipH ? -1 : 1, spec.flipV ? -1 : 1);
+      context.scale(spec.element.box.flipH || spec.flipH ? -1 : 1, spec.element.box.flipV || spec.flipV ? -1 : 1);
+      context.rotate(spec.element.box.rotation * Math.PI / 180);
       context.translate(-cx, -cy);
     }
     const baseDest = fitInto(bitmap.width, bitmap.height, frame, spec.fit, spec.align);
-    const placement = spec.placement ?? { x: 0, y: 0, scale: 1 };
     const dest = {
-      w: baseDest.w * placement.scale, h: baseDest.h * placement.scale,
-      x: baseDest.x + (baseDest.w - baseDest.w * placement.scale) / 2 + placement.x / 100 * spec.width,
-      y: baseDest.y + (baseDest.h - baseDest.h * placement.scale) / 2 + placement.y / 100 * spec.height,
+      x: spec.element.box.x / 100 * spec.width, y: spec.element.box.y / 100 * spec.height,
+      w: spec.element.box.w / 100 * spec.width, h: spec.element.box.h / 100 * spec.height,
     };
     const renderWidth = Math.max(1, Math.round(dest.w));
     const renderHeight = Math.max(1, Math.round(dest.h));
-    const sourcePixels = sourceContext.getImageData(0, 0, bitmap.width, bitmap.height);
-    const resized = resizeRgba({ width: bitmap.width, height: bitmap.height, data: sourcePixels.data }, renderWidth, renderHeight);
+    const crop = spec.element.crop ?? fullCrop();
+    const sourceX = Math.floor(crop.left * bitmap.width);
+    const sourceY = Math.floor(crop.top * bitmap.height);
+    const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
+    const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
+    const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
+    const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, renderWidth, renderHeight);
     const resizedCanvas = document.createElement("canvas");
     resizedCanvas.width = renderWidth;
     resizedCanvas.height = renderHeight;
@@ -176,7 +184,7 @@ export async function runExport(
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
       if (!asset.file) throw new Error("no source file");
-      const assetSpec = { ...spec, ...(asset.layout ? { box: asset.layout.frame } : {}), placement: asset.placement };
+      const assetSpec = { ...spec, ...(asset.layout ? { box: asset.layout.frame } : {}), element: asset.element };
       const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
       const custom = naming.customNames?.[asset.id]?.trim();
       let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
@@ -205,7 +213,7 @@ export function demo() {
   const spec: FrameSpec = {
     width: 1000, height: 2000, background: "#fff",
     box: { x: 10, y: 20, w: 80, h: 60 }, fit: "contain",
-    align: { horizontal: "center", vertical: "center" }, flipH: false, flipV: false,
+    align: { horizontal: "center", vertical: "center" }, flipH: false, flipV: false, element: fullPageImage(),
   };
 
   const frame = framePx(spec);

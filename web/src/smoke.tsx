@@ -23,12 +23,13 @@ import {
   countByStatus, docFromPreset, docTarget, emptyFilter, outputName, presetById, PRESETS,
   type Asset,
 } from "@/src/flow";
+import { fullPageImage } from "@/src/image-geometry";
 
 const assets: Asset[] = [
-  { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 2, name: "b.jpg", kind: "beauty", format: "jpg", src: { w: 1600, h: 1600 }, processed: true, overflow: false, fixed: false, corrupt: false },
-  { id: 3, name: "c.png", kind: "bottle", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: true, fixed: false, corrupt: false },
-  { id: 4, name: "d.webp", kind: "fashion", format: "webp", src: { w: 900, h: 900 }, processed: true, overflow: false, fixed: false, corrupt: true },
+  { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false, element: fullPageImage() },
+  { id: 2, name: "b.jpg", kind: "beauty", format: "jpg", src: { w: 1600, h: 1600 }, processed: true, overflow: false, fixed: false, corrupt: false, element: fullPageImage() },
+  { id: 3, name: "c.png", kind: "bottle", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: true, fixed: false, corrupt: false, element: fullPageImage() },
+  { id: 4, name: "d.webp", kind: "fashion", format: "webp", src: { w: 900, h: 900 }, processed: true, overflow: false, fixed: false, corrupt: true, element: fullPageImage() },
 ];
 const doc = docFromPreset(presetById("zalando"));
 const target = docTarget(doc, PRESETS);
@@ -79,13 +80,18 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
 
 check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
-  onBox={noop} onPlacement={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
-  "image-layer", "editor-toolbar", "Edit image", "Crop", "filmstrip", "canvas-grid");
+  onElement={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  "canvas-scene", "page-render-clip", "selection-overlay", "image-layer", "rotation-handle", "editor-toolbar", "Rotate left", "Rotate right", "Flip H", "Flip V", "Lock ratio", "Edit image", "Crop", "filmstrip", "canvas-grid");
 
 check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
-  onBox={noop} onPlacement={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  onElement={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
   "Original", "Resized preview", "split-handle");
+
+check("editor crop", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
+  compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
+  onElement={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} focusMode editMode="crop" />,
+  "crop-overlay", "crop-window", "Resize crop nw");
 
 check("review", <Review assets={assets.slice(2)} target={target} onOpen={noop} onFix={noop} onFixAll={noop} onRetry={noop} />,
   "Error Review", "Auto-fix scaling", "Re-run preset");

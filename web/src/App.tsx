@@ -17,20 +17,22 @@ import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import { applyRecipe, applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
 import {
-  AssetImage, defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
-  Review, SettingsScreen, type CompareView, type Guides, type Theme,
+  AssetImage, ContextualToolbar, defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
+  Review, SettingsScreen, type CompareView, type EditorTool, type Guides, type Theme,
 } from "@/src/screens";
 import {
   backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
   megabytes, mergeImport, presetById, PRESETS, ratioLabel, statusOf,
   type Asset, type Doc, type DupPolicy, type GalleryFilter, type Preset, type Scope, type Screen,
 } from "@/src/flow";
+import { fullPageImage, resetCrop, type CropRect, type ImageElement } from "@/src/image-geometry";
 
 const initialDoc = docFromPreset(presetById("zalando"));
 const EMPTY_EDITOR_ASSET: Asset = {
   id: 0, name: "Untitled canvas", kind: "shoe", format: "png", src: { w: 1, h: 1 },
-  processed: false, overflow: false, fixed: false, corrupt: false,
+  processed: false, overflow: false, fixed: false, corrupt: false, element: fullPageImage(),
 };
+type ElementHistoryEntry = { assetId: number; before: ImageElement; after: ImageElement };
 
 /** Undo/redo over the document snapshot only — navigation is never undoable. */
 function useHistory(initial: Doc) {
@@ -71,7 +73,9 @@ export function MinimaWorkspace() {
   // Focus is a small, horizontal review gallery first.  An image only opens
   // into the distraction-free canvas after it is deliberately chosen.
   const [focus, setFocus] = useState<false | "gallery" | "editor">(false);
-  const [focusTool, setFocusTool] = useState<"image" | "crop" | "canvas">("image");
+  const [focusTool, setFocusTool] = useState<EditorTool>("image");
+  const [cropSession, setCropSession] = useState<{ assetId: number; crop: CropRect | null } | null>(null);
+  const [elementHistory, setElementHistory] = useState({ past: [] as ElementHistoryEntry[], future: [] as ElementHistoryEntry[] });
   const [railOpen, setRailOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [zoom, setZoom] = useState(100);
@@ -100,7 +104,7 @@ export function MinimaWorkspace() {
 
   useEffect(() => { localStorage.setItem("minima-export-workflows", JSON.stringify(exportWorkflows)); }, [exportWorkflows]);
 
-  const { doc, setDoc, undo, redo, canUndo, canRedo } = useHistory(initialDoc);
+  const { doc, setDoc, undo: undoDocument, redo: redoDocument, canUndo: canUndoDocument, canRedo: canRedoDocument } = useHistory(initialDoc);
   const active = assets.find((asset) => asset.id === activeId) ?? assets[0];
   const editorAsset = active ?? EMPTY_EDITOR_ASSET;
   const hasActive = Boolean(active);
@@ -185,12 +189,44 @@ export function MinimaWorkspace() {
       : asset));
   }, [active, doc, setDoc]);
 
-  const setActivePlacement = useCallback((placement: import("@/src/flow").ImagePlacement) => {
+  const setActiveElement = useCallback((element: ImageElement) => {
     if (!active || doc.templateLocked) return;
-    setAssets((current) => current.map((asset) => asset.id === active.id
-      ? { ...asset, placement, processed: true, fixed: false }
-      : asset));
+    if (JSON.stringify(element) === JSON.stringify(active.element)) return;
+    setElementHistory((history) => ({
+      past: [...history.past, { assetId: active.id, before: active.element, after: element }].slice(-60), future: [],
+    }));
+    setAssets((current) => current.map((asset) => asset.id === active.id ? { ...asset, element, processed: true, fixed: false } : asset));
   }, [active, doc.templateLocked]);
+  const undo = useCallback(() => {
+    const entry = elementHistory.past[elementHistory.past.length - 1];
+    if (!entry) { undoDocument(); return; }
+    setAssets((current) => current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.before } : asset));
+    setElementHistory((history) => ({ past: history.past.slice(0, -1), future: [entry, ...history.future] }));
+  }, [elementHistory.past, undoDocument]);
+  const redo = useCallback(() => {
+    const entry = elementHistory.future[0];
+    if (!entry) { redoDocument(); return; }
+    setAssets((current) => current.map((asset) => asset.id === entry.assetId ? { ...asset, element: entry.after } : asset));
+    setElementHistory((history) => ({ past: [...history.past, entry].slice(-60), future: history.future.slice(1) }));
+  }, [elementHistory.future, redoDocument]);
+  const canUndo = elementHistory.past.length > 0 || canUndoDocument;
+  const canRedo = elementHistory.future.length > 0 || canRedoDocument;
+  const startCrop = useCallback(() => {
+    if (!active || doc.templateLocked) return;
+    setCropSession((current) => current?.assetId === active.id ? current : { assetId: active.id, crop: active.element.crop ? { ...active.element.crop } : null });
+  }, [active, doc.templateLocked]);
+  const resetActiveCrop = useCallback(() => {
+    if (!active || doc.templateLocked) return;
+    setActiveElement(resetCrop(active.element));
+  }, [active, doc.templateLocked, setActiveElement]);
+  const cancelCrop = useCallback(() => {
+    if (!cropSession || doc.templateLocked) return;
+    setAssets((current) => current.map((asset) => asset.id === cropSession.assetId
+      ? { ...asset, element: { ...asset.element, crop: cropSession.crop ? { ...cropSession.crop } : null } }
+      : asset));
+    setCropSession(null);
+  }, [cropSession, doc.templateLocked]);
+  const finishCrop = useCallback(() => setCropSession(null), []);
 
   const fixAssets = useCallback((ids: number[]) => {
     const idSet = new Set(ids);
@@ -390,24 +426,17 @@ export function MinimaWorkspace() {
         <span>{assets.findIndex((asset) => asset.id === active.id) + 1} / {assets.length}</span>
         <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
       </div>
-      <div className="focus-tools" role="toolbar" aria-label="Focus canvas tools">
-        <button className={focusTool === "image" ? "active" : ""} aria-pressed={focusTool === "image"} onClick={() => setFocusTool("image")}>Edit image</button>
-        <button onClick={() => filesInput.current?.click()}>Replace</button>
-        <button className={focusTool === "crop" ? "active" : ""} aria-pressed={focusTool === "crop"} onClick={() => setFocusTool("crop")}>Crop</button>
-        <button className={focusTool === "canvas" ? "active" : ""} aria-pressed={focusTool === "canvas"} onClick={() => setFocusTool("canvas")}>Position</button>
-        {focusTool === "image" && (["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
-          aria-pressed={doc.fit === fit} onClick={() => setDoc((current) => ({ ...current, fit }))}>{fit}</button>)}
-        {focusTool === "image" && <><button onClick={() => setActivePlacement({ ...(active.placement ?? { x: 0, y: 0, scale: 1 }), scale: (active.placement?.scale ?? 1) / 1.1 })}>−</button><button onClick={() => setActivePlacement({ ...(active.placement ?? { x: 0, y: 0, scale: 1 }), scale: (active.placement?.scale ?? 1) * 1.1 })}>+</button><button onClick={() => setActivePlacement({ x: 0, y: 0, scale: 1 })}>Reset image</button></>}
-        {focusTool === "crop" && <><button onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Reset crop</button><button onClick={() => setFocusTool("image")}>Done</button></>}
-        {focusTool === "canvas" && <button aria-pressed={guides.grid} onClick={() => setGuides((current) => ({ ...current, grid: !current.grid }))}>Grid</button>}
-      </div>
+      <ContextualToolbar className="focus-contextual-toolbar" mode={focusTool} onMode={setFocusTool} element={active.element} fit={doc.fit}
+        onFit={(fit) => setDoc((current) => ({ ...current, fit }))} onReplace={() => filesInput.current?.click()} onElement={setActiveElement}
+        onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop}
+        onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} grid={guides.grid} />
       <Button variant="secondary" size="sm" onClick={() => { setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
       <Button variant="ghost" size="icon" aria-label="Close focus mode" onClick={() => setFocus(false)}>×</Button>
     </header>
     <div className="focus-editor-host">
       <Editor asset={active} assets={assets} selected={selected} doc={doc} zoom={zoom} compare={false}
         compareView="split" splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onBox={setActiveBox} onPlacement={setActivePlacement} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onElement={setActiveElement} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files) => importFiles(files, true)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} />
     </div>
@@ -495,7 +524,7 @@ export function MinimaWorkspace() {
         onReview={() => goto("review")} onRemove={askRemoval} />}
       {screen === "editor" && <Editor asset={editorAsset} assets={assets} selected={selected} doc={doc} zoom={zoom}
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
-        onBox={setActiveBox} onPlacement={setActivePlacement} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
+        onElement={setActiveElement} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files) => importFiles(files, true)}
         onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} />}
