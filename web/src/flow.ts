@@ -9,6 +9,7 @@
  */
 
 import { begin } from "@/src/selfcheck";
+import type { ImageElement } from "@/src/image-geometry";
 import type { LayoutResult } from "@/src/editor-engine";
 
 export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
@@ -121,6 +122,8 @@ export type Asset = {
   layout?: LayoutResult;
   /** Per-image crop/pan state. It deliberately never changes the shared frame. */
   placement?: ImagePlacement;
+  /** Canva-style independent element geometry; placement is retained only for migration. */
+  element?: ImageElement;
 };
 
 /** Ratio drift above this reads as a real mismatch rather than rounding. */
