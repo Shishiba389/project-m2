@@ -17,7 +17,7 @@ import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector } from "@/src/inspector";
 import { applyRecipe, applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
 import {
-  defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
+  AssetImage, defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
   Review, SettingsScreen, type CompareView, type Guides, type Theme,
 } from "@/src/screens";
 import {
@@ -68,7 +68,10 @@ export function MinimaWorkspace() {
   const [compareView, setCompareView] = useState<CompareView>("split");
   const [splitAt, setSplitAt] = useState(50);
   const [overlay, setOverlay] = useState(100);
-  const [focus, setFocus] = useState(false);
+  // Focus is a small, horizontal review gallery first.  An image only opens
+  // into the distraction-free canvas after it is deliberately chosen.
+  const [focus, setFocus] = useState<false | "gallery" | "editor">(false);
+  const [focusTool, setFocusTool] = useState<"image" | "crop" | "canvas">("image");
   const [railOpen, setRailOpen] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [zoom, setZoom] = useState(100);
@@ -332,7 +335,7 @@ export function MinimaWorkspace() {
       const target = event.target as HTMLElement | null;
       const typing = target instanceof HTMLElement && (["INPUT", "TEXTAREA"].includes(target.tagName) || target.isContentEditable);
       const mod = event.ctrlKey || event.metaKey;
-      if (mod && event.shiftKey && event.key.toLowerCase() === "f") { event.preventDefault(); if (screen !== "editor") goto("editor"); setFocus((value) => !value); return; }
+      if (mod && event.shiftKey && event.key.toLowerCase() === "f") { event.preventDefault(); if (screen !== "editor") goto("editor"); setFocus((value) => value ? false : "gallery"); return; }
       if (mod && event.shiftKey && event.key.toLowerCase() === "z") { event.preventDefault(); redo(); return; }
       if (mod && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
       if (event.key === "Escape") { setFocus(false); return; }
@@ -355,23 +358,38 @@ export function MinimaWorkspace() {
     });
   }, [assets]);
 
-  if (focus && hasActive) return <main className="focus-workspace">
-    <header className="focus-toolbar" aria-label="Focus mode toolbar">
+  if (focus === "gallery") return <main className="focus-workspace focus-gallery-workspace">
+    <header className="focus-toolbar" aria-label="Focus gallery toolbar">
       <Button variant="ghost" size="sm" onClick={() => setFocus(false)}><ArrowLeft /> Exit focus</Button>
+      <div className="focus-title"><strong>Focus gallery</strong><span>Select an image to edit on the canvas</span></div>
+      <Button variant="secondary" size="sm" onClick={() => filesInput.current?.click()}><Upload /> Import</Button>
+    </header>
+    <section className="focus-gallery" aria-label="Focus image gallery">
+      <header><span>{assets.length} image{assets.length === 1 ? "" : "s"}</span><strong>Choose an image to open its canvas</strong></header>
+      <div className="focus-gallery-strip">{assets.map((item) => <button key={item.id}
+        className={item.id === active.id ? "active" : ""} aria-current={item.id === active.id ? "true" : undefined}
+        onClick={() => { setActiveId(item.id); setFocus("editor"); }}>
+        <AssetImage asset={item} fit="cover" /><span>{item.name}</span>
+      </button>)}</div>
+    </section>
+  </main>;
+
+  if (focus === "editor" && hasActive) return <main className="focus-workspace">
+    <header className="focus-toolbar" aria-label="Focus mode toolbar">
+      <Button variant="ghost" size="sm" onClick={() => setFocus("gallery")}><ArrowLeft /> Gallery</Button>
       <div className="focus-title"><strong>{active.name}</strong><span>Editor focus mode</span></div>
       <div className="focus-toolbar-group" role="group" aria-label="Image navigation">
         <Button variant="ghost" size="icon" aria-label="Previous image" onClick={() => step(-1)}><ChevronLeft /></Button>
         <span>{assets.findIndex((asset) => asset.id === active.id) + 1} / {assets.length}</span>
         <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
       </div>
-      <div className="focus-tools" role="group" aria-label="Focus editing tools">
-        {(["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
-          data-tip={`${fit} image in frame`} title={`${fit} image in frame`} aria-label={`${fit} image in frame`}
+      <div className="focus-tools" role="toolbar" aria-label="Focus canvas tools">
+        {(["image", "crop", "canvas"] as const).map((tool) => <button key={tool} className={focusTool === tool ? "active" : ""}
+          aria-pressed={focusTool === tool} onClick={() => setFocusTool(tool)}>{tool[0].toUpperCase() + tool.slice(1)}</button>)}
+        {focusTool === "image" && (["Fit", "Fill", "Stretch"] as const).map((fit) => <button key={fit} className={doc.fit === fit ? "active" : ""}
           aria-pressed={doc.fit === fit} onClick={() => setDoc((current) => ({ ...current, fit }))}>{fit}</button>)}
-        <button className="focus-tool" data-tip="Toggle guides" title="Toggle guides" aria-label="Toggle guides"
-          aria-pressed={guides.grid} onClick={() => setGuides((current) => ({ ...current, grid: !current.grid }))}>Grid</button>
-        <button className="focus-tool" data-tip="Reset frame to canvas" title="Reset frame to canvas" aria-label="Reset frame to canvas"
-          onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Reset</button>
+        {focusTool === "crop" && <button onClick={() => setDoc((current) => ({ ...current, box: { x: 0, y: 0, w: 100, h: 100 } }))}>Fill canvas</button>}
+        {focusTool === "canvas" && <button aria-pressed={guides.grid} onClick={() => setGuides((current) => ({ ...current, grid: !current.grid }))}>Grid</button>}
       </div>
       <Button variant="secondary" size="sm" onClick={() => { setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
       <Button variant="ghost" size="icon" aria-label="Close focus mode" onClick={() => setFocus(false)}>×</Button>
@@ -479,7 +497,7 @@ export function MinimaWorkspace() {
             scopeCount={scoped.length} selectedCount={selected.length} totalCount={assets.length}
             compare={compare} overlay={overlay} processing={processing} progress={progress}
             onPreset={applyPreset} onDoc={setDoc} onGuides={setGuides} onScope={setScope} onOverlay={setOverlay}
-            onApply={runApply} onFocus={() => { if (hasActive) { goto("editor"); setFocus(true); } else touch("Import an image to enter focus mode"); }} onClose={() => setInspectorOpen(false)}
+            onApply={runApply} onFocus={() => { if (hasActive) { goto("editor"); setFocus("gallery"); } else touch("Import an image to enter focus mode"); }} onClose={() => setInspectorOpen(false)}
             onResetGuides={() => { setGuides(defaultGuides); applyPreset(doc.presetId); }} />)}
 
     </section>
