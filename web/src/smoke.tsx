@@ -63,7 +63,17 @@ function check(label: string, node: React.ReactElement, ...needles: string[]) {
     return;
   }
   console.log(`ok   ${label} (${html.length} chars)`);
+  return html;
 }
+
+const between = (html: string, from: string, to: string) => {
+  const start = html.indexOf(from);
+  const end = html.indexOf(to, start);
+  return start < 0 || end < 0 ? "" : html.slice(start, end);
+};
+
+/** How many times a fragment appears, for assertions about drawing something once. */
+const occurrences = (html: string, needle: string) => html.split(needle).length - 1;
 
 // A first run has no assets, so the shell opens on Import. The seeded demo
 // images are gone: they had no file behind them and were the stand-ins showing
@@ -79,17 +89,86 @@ check("gallery", <Gallery assets={assets} total={assets.length} selected={[1]} c
   zoom={100} needsAttention={2} target={target} onFilter={noop} onChoose={noop} onOpen={noop} onReview={noop} onRemove={noop} />,
   "Completed", "Review 2", "Search files", "need attention");
 
-check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
+const editorHtml = check("editor", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
-  "canvas-scene", "page-render-clip", "selection-overlay", "image-layer", "rotation-handle", "editor-toolbar", "Rotate left", "Rotate right", "More", "Resize image from nw", "Edit image", "Crop", "filmstrip", "canvas-grid");
+  "canvas-scene", "page-render-clip", "selection-overlay", "image-layer", "rotation-handle", "editor-toolbar", "Rotate left", "Rotate right", "More", "Resize image from nw", "Edit image", "Crop", "filmstrip", "canvas-grid",
+  // The page is an artboard inside a workspace now: a viewport hosts the
+  // scene, a scrim marks what falls outside the page, and the scene carries
+  // the counter-scale every piece of chrome divides back out.
+  "viewport", "workspace-scrim", "workspace-page-shadow", "--zi", "Hold Space and drag to pan",
+  // Rulers are pane chrome: they mount even before the pane has been measured.
+  "ruler ruler-h", "ruler ruler-v", "ruler-corner",
+  // The label undoes its parent's orientation, so a mirrored object is not
+  // labelled in mirror writing.
+  "--fx", "--fy");
 
-check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare
+/* Scene and interaction are separate layers (§3).
+   The selection overlay used to carry a second copy of the selected image so
+   that it could sit above the scrim; the scene draws it already, and two
+   copies composite wrongly on anything with alpha - 50% over 50% reads as
+   75%, so the editor showed artwork more opaque than the file it exported.
+   Counting the whole document would also count the filmstrip's thumbnails, so
+   each region is sliced out by the markers that bound it. */
+if (editorHtml) {
+  const scene = between(editorHtml, "page-render-clip", "workspace-scrim");
+  const chrome = between(editorHtml, "selection-overlay", "filmstrip");
+  console.assert(scene !== "" && chrome !== "", "the editor renders both a scene layer and an interaction layer");
+  console.assert(occurrences(scene, "product-placeholder") === 1, "the scene draws the one layer on the canvas, once");
+  console.assert(occurrences(chrome, "product-placeholder") === 0, "and the interaction layer draws no picture at all");
+  console.assert(chrome.includes("Resize image from nw"), "but it does carry the handles");
+}
+
+/* A multi-selection replaces the single-object chrome with one group
+   rectangle and swaps the contextual toolbar for align and distribute (§18,
+   §25). Two objects are selected here, so neither Crop nor Replace has a
+   subject any more and neither should be on screen. */
+const multiHtml = check("editor multi-select", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc}
+  viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
+  compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
+  multi={{
+    selection: ["asset-1", "asset-2"],
+    items: [
+      { key: "asset-1", box: { ...assets[0].element.box, x: 10, y: 10, w: 30, h: 20 } },
+      { key: "asset-2", box: { ...assets[0].element.box, x: 50, y: 40, w: 30, h: 20 } },
+    ],
+    onSelect: noop, onGestureStart: noop, onWrite: noop, onGestureEnd: noop, onAlign: noop, onDistribute: noop,
+  }}
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  "multi-selection", "2 selected", "Align left", "Distribute horizontally", "Resize selection from nw");
+if (multiHtml) {
+  console.assert(!multiHtml.includes("Resize image from nw"), "a group hides the single-image handles");
+  console.assert(!multiHtml.includes("Edit image"), "and the contextual toolbar gives way to align and distribute");
+  console.assert(multiHtml.includes("Distribute horizontally"), "which is what a two-object selection can actually do");
+}
+
+/* One asset, placed twice (§22). The scene draws two pictures from one
+   source file, each with its own geometry and its own key - which is the
+   whole point of separating a reusable asset from a scene instance. */
+const twiceHtml = check("editor two copies", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc}
+  viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
+  compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
+  canvasLayers={[
+    { key: "place-a", assetId: assets[0].id, placementId: "a", element: { ...assets[0].element, box: { ...assets[0].element.box, x: 5, y: 5, w: 40, h: 40 } } },
+    { key: "place-b", assetId: assets[0].id, placementId: "b", element: { ...assets[0].element, box: { ...assets[0].element.box, x: 55, y: 55, w: 40, h: 40 } } },
+  ]}
+  activeLayer={{ key: "place-a", assetId: assets[0].id, placementId: "a", element: { ...assets[0].element, box: { ...assets[0].element.box, x: 5, y: 5, w: 40, h: 40 } } }}
+  onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
+  "canvas-scene");
+if (twiceHtml) {
+  const scene = between(twiceHtml, "page-render-clip", "workspace-scrim");
+  console.assert(occurrences(scene, "product-placeholder") === 2, "one asset placed twice is drawn twice");
+  const chrome = between(twiceHtml, "selection-overlay", "filmstrip");
+  console.assert(occurrences(chrome, "layer-hit") === 1, "the copy that is not being edited is a click target");
+  console.assert(chrome.includes("Resize image from nw"), "and the one being edited has the handles");
+}
+
+check("editor comparing", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare
   compareView="split" splitAt={50} overlay={80} guides={defaultGuides} target={target}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
   "Original", "Resized preview", "split-handle");
 
-check("editor crop", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} zoom={100} compare={false}
+check("editor crop", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={doc} viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} focusMode editMode="crop" />,
   "crop-overlay", "crop-window", "Resize crop from nw");
@@ -99,13 +178,13 @@ check("editor crop", <Editor asset={assets[0]} assets={assets} selected={[1]} do
 const emptyFrame = createFrame({ x: 10, y: 10, w: 40, h: 40 });
 const filledFrame = attachImage(createFrame({ x: 50, y: 50, w: 40, h: 40 }), assets[0].id, assets[0].src, { width: doc.width, height: doc.height });
 const framedDoc = { ...doc, frames: [emptyFrame, filledFrame] };
-check("editor frames", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={framedDoc} zoom={100} compare={false}
+check("editor frames", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={framedDoc} viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop}
   frameSelection={{ id: emptyFrame.id, editing: false }} />,
   "frame-layer", "frame-placeholder", "Drop image here", "frame-selection", "Empty frame", "Resize frame from nw", "Delete frame", "Add frame");
 
-check("editor frame content", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={framedDoc} zoom={100} compare={false}
+check("editor frame content", <Editor asset={assets[0]} assets={assets} selected={[1]} doc={framedDoc} viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop}
   frameSelection={{ id: filledFrame.id, editing: true }} />,
@@ -118,16 +197,31 @@ check("presets", <PresetManager presets={PRESETS} activeId="zalando" onApply={no
   onEdit={noop} onDuplicate={noop} onDelete={noop} onShare={noop} />,
   "Presets Manager", "Preset Details", "Add new custom preset", "Marketplace");
 
-check("settings", <SettingsScreen theme="dark" onTheme={noop} />,
-  "Settings", "Appearance", "Light", "Dark", "System");
+check("settings", <SettingsScreen />,
+  "Settings", "Keyboard shortcuts", "Presets screen");
 
 check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} presets={PRESETS} guides={defaultGuides}
   scope="selected" scopeCount={3} selectedCount={3} totalCount={4} compare overlay={100} processing={false} progress={0}
   onPreset={noop} onDoc={noop} onGuides={noop} onScope={noop} onOverlay={noop} onApply={noop} onFocus={noop}
-  onClose={noop} onResetGuides={noop} />,
+  onClose={noop} onResetGuides={noop}
+  layers={[
+    { key: "frame-a", name: "bottle.png", frame: true, empty: false },
+    { key: "asset-2", name: "hero.png", frame: false, empty: false },
+    { key: "asset-1", name: "Untitled canvas", frame: false, empty: false, pinned: true },
+  ]}
+  layerSelection={["asset-2"]} onLayerSelect={noop} onLayerReorder={noop}
+  selection={{ label: "Hero shot", box: { x: 12, y: 8, w: 60, h: 45, rotation: 15, flipH: true, flipV: false, lockedRatio: true } }}
+  onSelectionBox={noop} />,
   "Resize Inspector", "Image fit alignment", "Guides", "Snap safe", "Canvas background",
   "Overlay opacity", "Apply resize to", "Apply to 3 images",
-  "Lock canvas settings");
+  "Lock canvas settings",
+  // The transform panel renders its derived pixel values, not raw percentages.
+  "Transform", "Hero shot", "Angle", "Flip horizontally", "Unlock aspect ratio",
+  // The layers panel is the scene graph, topmost first, with the selected
+  // row marked for assistive technology as well as visually.
+  "Layers", "layers-list", "bottle.png", "hero.png", "aria-selected=\"true\"",
+  // The page's own image is labelled and pinned, not silently undraggable.
+  "Page image");
 
 check("export dialog", <ExportDialog open onOpenChange={noop} queue={assets} options={defaultExportOptions} canvas="1801 × 2600 px" onOptions={noop} onStart={noop} />);
 

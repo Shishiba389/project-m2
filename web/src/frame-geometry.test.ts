@@ -1,6 +1,6 @@
 import { begin } from "@/src/selfcheck";
 import { attachImage, clearFrame, contentPageElement, createFrame, fitFrame, frameAt, frameFromDrag, removeFrame, replaceFrame } from "@/src/frame-geometry";
-import { fullPageImage, moveImage, resizeImage } from "@/src/image-geometry";
+import { fullPageImage, moveImage } from "@/src/image-geometry";
 
 const finish = begin();
 const page = { width: 1000, height: 1000 };
@@ -51,5 +51,6 @@ console.assert(clearFrame(filled).imageId === null && clearFrame(filled).content
 console.assert(replaceFrame([frame, other], { ...other, imageId: 3 }).at(-1)!.imageId === 3, "replace swaps one frame in place");
 console.assert(removeFrame([frame, other], frame.id).length === 1, "remove deletes exactly one frame");
 // Resizing frame content reuses the free-image geometry, so the handles behave identically.
-console.assert(resizeImage(filled.content!, "se", 10, 0).box.w > 100, "frame content resizes with the shared image geometry");
+// Resizing a frame's content is exercised in gestures.test.ts, where the
+// pointer goes through the frame's inverse before it means anything.
 finish("frame-geometry.test.ts");

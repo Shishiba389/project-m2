@@ -134,7 +134,6 @@ export type Asset = {
    * the batch item the Gallery lists. The active asset always renders; these
    * render alongside it.
    */
-  onCanvas?: boolean;
 };
 
 /** Ratio drift above this reads as a real mismatch rather than rounding. */
@@ -464,6 +463,25 @@ export type Doc = {
   templateLocked?: boolean;
   /** Frame containers on the canvas, bottom to top. Empty for a plain batch page. */
   frames: FrameElement[];
+  /**
+   * Every free image on the canvas, as instances rather than as assets.
+   *
+   * An asset is a reusable source; a placement is one appearance of it (§22).
+   * The same file can be laid out three times, and each placement carries its
+   * own geometry, its own crop and its own identity in the undo history. An
+   * asset with no placement is not absent from the export: the canvas is a
+   * template, and such an asset is run through it using its own `element`.
+   */
+  placements: Placement[];
+  /**
+   * The canvas stack, bottom to top, by layer key.
+   *
+   * Optional because it did not always exist: before there was a layers panel
+   * the order was implicit - every free image below every frame, each in the
+   * order its list happened to be in - and a document written then must still
+   * open looking the way it did.  `orderStack` is what reconciles the two.
+   */
+  stack?: string[];
 };
 
 export const srcRatio = (asset: Asset) => asset.src.w / asset.src.h;
@@ -474,7 +492,7 @@ export function docFromPreset(preset: Preset): Doc {
     presetId: preset.id, width: preset.width, height: preset.height, lock: true,
     ratio: preset.width / preset.height,
     fit: preset.fit, align: preset.align, safeX: preset.safeX, safeY: preset.safeY,
-    background: preset.background, frames: [],
+    background: preset.background, frames: [], placements: [],
   };
 }
 
@@ -692,7 +710,154 @@ export function demo() {
   console.assert(pairedRedo.document && pairedRedo.element, "a paired action redoes as one step too");
   console.assert(redoTargets(4, Infinity).element && !redoTargets(4, Infinity).document, "an empty document future never wins redo");
 
+  /* -------------------------------------------------------- dropping files */
+
+  const single = dropLayout(1, { x: 50, y: 50 })[0];
+  console.assert(Math.abs(single.x + single.w / 2 - 50) < 1e-9 && Math.abs(single.y + single.h / 2 - 50) < 1e-9,
+    "one image lands centred on the point it was dropped at");
+  const tiled = dropLayout(9, { x: 50, y: 50 });
+  console.assert(tiled.length === 9, "nine images are nine boxes");
+  const overlapping = tiled.some((a, i) => tiled.some((b, j) =>
+    i !== j && a.x < b.x + b.w - 1e-9 && b.x < a.x + a.w - 1e-9 && a.y < b.y + b.h - 1e-9 && b.y < a.y + a.h - 1e-9));
+  console.assert(!overlapping, "and no two of them overlap, so none is hidden under another");
+  console.assert(new Set(tiled.map((box) => `${box.x},${box.y}`)).size === 9, "every one lands somewhere of its own");
+  const spread = dropLayout(4, { x: 50, y: 50 });
+  const midX = spread.reduce((total, box) => total + box.x + box.w / 2, 0) / 4;
+  console.assert(Math.abs(midX - 50) < 1e-9, "the grid is centred on the drop point, not hung off one corner");
+  console.assert(dropLayout(16, { x: 50, y: 50 })[0].w < dropLayout(2, { x: 50, y: 50 })[0].w,
+    "a bigger drop uses smaller tiles rather than running off the page");
+
+  /* ----------------------------------------------------- the canvas stack */
+
+  const present = ["asset-1", "frame-a", "asset-2"];
+  console.assert(orderStack(undefined, present).join() === present.join(),
+    "a document with no stack keeps the order it always had");
+  console.assert(orderStack(["frame-a", "asset-2", "asset-1"], present).join() === "frame-a,asset-2,asset-1",
+    "an arranged stack is obeyed");
+  // A newly added object is not in the stack yet and belongs on top, which is
+  // the end of a bottom-to-top list.
+  console.assert(orderStack(["frame-a"], present).join() === "frame-a,asset-1,asset-2",
+    "anything the stack does not mention goes above what it does");
+  console.assert(orderStack(["asset-9", "frame-a"], present).join() === "frame-a,asset-1,asset-2",
+    "and a key for an object that is gone is dropped rather than left as a hole");
+
+  const stack = ["a", "b", "c", "d"];
+  console.assert(reorderStack(stack, "a", 4).join() === "b,c,d,a", "a layer can be sent to the top");
+  console.assert(reorderStack(stack, "d", 0).join() === "d,a,b,c", "and to the bottom");
+  console.assert(reorderStack(stack, "b", 3).join() === "a,c,b,d", "moving down lands after the gap closes, not before it");
+  console.assert(reorderStack(stack, "c", 1).join() === "a,c,b,d", "and moving up lands where the indicator was");
+  console.assert(reorderStack(stack, "b", 1).join() === stack.join(), "dropping a layer back where it started changes nothing");
+  console.assert(reorderStack(stack, "z", 0).join() === stack.join(), "a layer that is not in the stack cannot be moved");
+  console.assert(reorderStack(stack, "a", 99).join() === "b,c,d,a", "an index past the end clamps to the top");
+
+  /* The panel counts slots from the top; the stack counts from the bottom, so
+     a slot `i` rows down the panel is `length - i` up the stack.  This is the
+     one place an off-by-one would be invisible - the list would look right and
+     the exported file would be wrong - so the conversion is asserted from the
+     reader's end: what the panel shows after the move. */
+  const bottomUp = ["a", "b", "c"];
+  const asShown = (order: string[]) => [...order].reverse().join();
+  const drop = (key: string, slotFromTop: number) => reorderStack(bottomUp, key, bottomUp.length - slotFromTop);
+  console.assert(asShown(bottomUp) === "c,b,a", "the panel shows the topmost layer first");
+  console.assert(asShown(drop("a", 0)) === "a,c,b", "dropping the bottom layer above the first row puts it on top");
+  console.assert(asShown(drop("c", 3)) === "b,a,c", "and dropping the top layer below the last row puts it at the bottom");
+  console.assert(asShown(drop("b", 0)) === "b,c,a", "Alt+Up from the middle row lifts it one place");
+  console.assert(asShown(drop("b", 3)) === "c,a,b", "Alt+Down from the middle row drops it one place");
+  console.assert(asShown(drop("b", 1)) === "c,b,a", "dropping a layer back in its own gap changes nothing");
+  // The panel can show one more row than the stack arranges - the page's own
+  // image is pinned below them all - so a drop past the last arrangeable row
+  // has to land at the bottom rather than run off the end.
+  console.assert(asShown(drop("c", 4)) === "b,a,c", "a slot past the last row clamps to the bottom");
+  console.assert(reorderStack(bottomUp, "c", -1).join() === "c,a,b", "and a negative index cannot escape either");
+
   finish("flow.ts");
+}
+
+/* ------------------------------------------------------------ canvas keys
+
+   A canvas selection spans two kinds of object - free images, which belong to
+   assets, and frames, which belong to the document - so its members are named
+   by an opaque key rather than by an id whose type would say which list to
+   look in. */
+/** One appearance of an asset on the canvas. */
+export type Placement = { id: string; assetId: number; element: ImageElement };
+let placementSeq = 0;
+export const newPlacement = (assetId: number, element: ImageElement): Placement =>
+  ({ id: `p${(placementSeq += 1).toString(36)}${Date.now().toString(36)}`, assetId, element });
+
+/**
+ * One free image on the canvas, whichever list it came from.
+ *
+ * `placementId` is null for the *subject*: the asset currently open in the
+ * editor, previewed on the canvas before anything has placed it there. That is
+ * the batch case - fifty imports run through one template - and editing it
+ * edits the asset's own geometry. Every other layer is a placement, and
+ * editing it edits the document.
+ */
+export type CanvasLayer = {
+  key: string; assetId: number; element: ImageElement; placementId: string | null;
+};
+
+/**
+ * Where several images dropped at once should land.
+ *
+ * A cascade - each copy nudged a few percent past the last - is what most
+ * editors do, and it is wrong here: these are product shots dropped fifty at a
+ * time, and a cascade leaves fifty near-identical rectangles in a pile that
+ * has to be dragged apart one by one. A grid around the drop point is the same
+ * number of objects with none of them hidden.
+ */
+export function dropLayout(count: number, at: { x: number; y: number }) {
+  const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
+  const rows = Math.max(1, Math.ceil(count / columns));
+  // The grid fills a little over half the page, so a drop is visible at a
+  // glance without covering the whole artboard.
+  const size = Math.min(50, 60 / columns);
+  const gap = size * 1.1;
+  return Array.from({ length: count }, (_, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    return {
+      x: at.x + (column - (columns - 1) / 2) * gap - size / 2,
+      y: at.y + (row - (rows - 1) / 2) * gap - size / 2,
+      w: size, h: size,
+    };
+  });
+}
+
+export const assetKey = (id: number) => `asset-${id}`;
+export const placementKey = (id: string) => `place-${id}`;
+export const placementIdOf = (key: string) => key.startsWith("place-") ? key.slice(6) : null;
+export const frameKey = (id: string) => `frame-${id}`;
+const keyIsAsset = (key: string) => key.startsWith("asset-");
+export const assetIdOf = (key: string) => keyIsAsset(key) ? Number(key.slice(6)) : null;
+export const frameIdOf = (key: string) => key.startsWith("frame-") ? key.slice(6) : null;
+
+/**
+ * The canvas stack, bottom to top.
+ *
+ * `order` is what the user arranged; `present` is what is actually on the
+ * canvas right now, in the order the app produced before a stack existed.
+ * Keys the order does not mention go on top, in that legacy order - which is
+ * both what an old document needs (it has no order, so it keeps its old look)
+ * and what a newly added object needs (it lands above everything, where a new
+ * object belongs).  Keys the order mentions but that are gone are dropped, so
+ * deleting an object cannot leave a hole that later resurfaces.
+ */
+export function orderStack(order: string[] | undefined, present: string[]): string[] {
+  const here = new Set(present);
+  const placed = (order ?? []).filter((key) => here.has(key));
+  const seen = new Set(placed);
+  return [...placed, ...present.filter((key) => !seen.has(key))];
+}
+
+/** Move one layer to another position in the stack, closing the gap behind it. */
+export function reorderStack(order: string[], key: string, to: number): string[] {
+  const from = order.indexOf(key);
+  if (from < 0) return order;
+  const without = order.filter((entry) => entry !== key);
+  const at = Math.max(0, Math.min(without.length, to > from ? to - 1 : to));
+  return [...without.slice(0, at), key, ...without.slice(at)];
 }
 
 if (typeof process !== "undefined" && process.argv?.[1]?.includes("flow")) demo();

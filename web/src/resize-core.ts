@@ -17,12 +17,53 @@ export function prefilterDimensions(sw: number, sh: number, dw: number, dh: numb
   return { width: sw > dw * 2 ? Math.min(sw, dw * 2) : sw, height: sh > dh * 2 ? Math.min(sh, dh * 2) : sh };
 }
 
+/**
+ * Peak working memory for one resize, in bytes.
+ *
+ * `resizeRgba` works in linear light in `Float64Array`, which is 32 bytes a
+ * pixel, so the estimate is dominated by the source: an ordinary 14-megapixel
+ * product photo needs the better part of a gigabyte to pass through.
+ *
+ * The buffers, in the order they are alive:
+ *
+ *   - the source bytes, plus their linear copy, held together by `toLinear`;
+ *   - *if the area prefilter runs*, its horizontal intermediate and its
+ *     result, which becomes the bicubic pass's input;
+ *   - the bicubic pass's horizontal intermediate and its result;
+ *   - the 8-bit output.
+ *
+ * The two filter passes do not overlap, so the larger of them is the one that
+ * counts.  The previous version of this charged the prefilter's buffers even
+ * when no prefilter ran - `pre` equals the source then, so it billed twice the
+ * source for nothing - and left out the bicubic result entirely.  That made it
+ * over-estimate by half, and images that fit comfortably were refused as too
+ * large to render.
+ */
 export function estimatePeakBytes(sw: number, sh: number, dw: number, dh: number) {
   const pre = prefilterDimensions(sw, sh, dw, dh);
-  return sw * sh * 36 + Math.max(pre.width * sh + pre.width * pre.height, dw * pre.height) * 32 + dw * dh * 4;
+  const output = dw * dh * 4;
+  if (pre.width !== sw || pre.height !== sh) {
+    // The prefilter reads the 8-bit source, so only 4 bytes a source pixel.
+    const prefilterPass = sw * sh * 4 + (pre.width * sh + pre.width * pre.height) * 32;
+    const bicubicPass = (pre.width * pre.height + dw * pre.height + dw * dh) * 32;
+    return Math.max(prefilterPass, bicubicPass) + output;
+  }
+  // Without a prefilter the whole resize is one pass, straight off the bytes.
+  return sw * sh * 4 + (dw * sh + dw * dh) * 32 + output;
 }
 
 export const srgbToLinear = (value: number) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+
+/**
+ * Every linear value an 8-bit channel can produce.
+ *
+ * `srgbToLinear(v / 255)` has 256 possible inputs, and a `**` is not cheap, so
+ * the whole function collapses into a table built once. The entries are the
+ * identical doubles the call returns, so nothing about the arithmetic changes -
+ * it is the same number, fetched instead of recomputed.
+ */
+const LINEAR_FROM_BYTE = Float64Array.from({ length: 256 }, (_, value) => srgbToLinear(value / 255));
+const UNIT_FROM_BYTE = Float64Array.from({ length: 256 }, (_, value) => value / 255);
 export const linearToSrgb = (value: number) => value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
 
 export function cubicKernel(value: number) {
@@ -64,7 +105,7 @@ export function buildAreaAxisMap(sourceLength: number, destinationLength: number
   });
 }
 
-function filter(source: Float64Array, sw: number, sh: number, dw: number, dh: number, xMap: AxisMap[], yMap: AxisMap[]) {
+function horizontalPass(source: Float64Array, sw: number, sh: number, dw: number, xMap: AxisMap[]) {
   const horizontal = new Float64Array(dw * sh * 4);
   for (let y = 0; y < sh; y += 1) for (let x = 0; x < dw; x += 1) {
     const map = xMap[x]; const out = (y * dw + x) * 4;
@@ -74,6 +115,45 @@ function filter(source: Float64Array, sw: number, sh: number, dw: number, dh: nu
       horizontal[out + 2] += source[at + 2] * weight; horizontal[out + 3] += source[at + 3] * weight;
     }
   }
+  return horizontal;
+}
+
+/**
+ * The first pass, reading straight from the 8-bit source.
+ *
+ * Converting to linear light inside this loop, rather than materialising a
+ * full-resolution `Float64Array` copy of the whole image first, is the
+ * difference between 36 bytes per source pixel and 4. On a large photograph
+ * that is the difference between an export that runs and one the browser
+ * refuses for want of memory.
+ *
+ * This reads a pixel once per tap rather than once in total, which is why it
+ * was worth doing only for the area prefilter until the conversion became a
+ * table lookup. Now it is cheaper than the copy it replaced, on both passes.
+ *
+ * The arithmetic is untouched: the same `srgbToLinear(v / 255) * alpha` for the
+ * same pixel, multiplied by the same weight, summed into the same accumulator
+ * in the same order. The output is bit-for-bit what the two-step version
+ * produced, and `resize-parity.test.ts` is what proves it.
+ */
+function horizontalPassFrom8Bit(source: RgbaBuffer, dw: number, xMap: AxisMap[]) {
+  const { width: sw, height: sh, data } = source;
+  const horizontal = new Float64Array(dw * sh * 4);
+  for (let y = 0; y < sh; y += 1) for (let x = 0; x < dw; x += 1) {
+    const map = xMap[x]; const out = (y * dw + x) * 4;
+    for (let i = 0; i < map.indices.length; i += 1) {
+      const at = (y * sw + map.indices[i]) * 4; const weight = map.weights[i];
+      const alpha = UNIT_FROM_BYTE[data[at + 3]];
+      horizontal[out] += LINEAR_FROM_BYTE[data[at]] * alpha * weight;
+      horizontal[out + 1] += LINEAR_FROM_BYTE[data[at + 1]] * alpha * weight;
+      horizontal[out + 2] += LINEAR_FROM_BYTE[data[at + 2]] * alpha * weight;
+      horizontal[out + 3] += alpha * weight;
+    }
+  }
+  return horizontal;
+}
+
+function verticalPass(horizontal: Float64Array, dw: number, dh: number, yMap: AxisMap[]) {
   const result = new Float64Array(dw * dh * 4);
   for (let y = 0; y < dh; y += 1) for (let x = 0; x < dw; x += 1) {
     const map = yMap[y]; const out = (y * dw + x) * 4;
@@ -86,16 +166,8 @@ function filter(source: Float64Array, sw: number, sh: number, dw: number, dh: nu
   return result;
 }
 
-function toLinear(input: RgbaBuffer) {
-  const output = new Float64Array(input.width * input.height * 4);
-  for (let i = 0; i < input.data.length; i += 4) {
-    const alpha = input.data[i + 3] / 255;
-    output[i] = srgbToLinear(input.data[i] / 255) * alpha;
-    output[i + 1] = srgbToLinear(input.data[i + 1] / 255) * alpha;
-    output[i + 2] = srgbToLinear(input.data[i + 2] / 255) * alpha;
-    output[i + 3] = alpha;
-  }
-  return output;
+function filter(source: Float64Array, sw: number, sh: number, dw: number, dh: number, xMap: AxisMap[], yMap: AxisMap[]) {
+  return verticalPass(horizontalPass(source, sw, sh, dw, xMap), dw, dh, yMap);
 }
 
 function toRgba(input: Float64Array, width: number, height: number): RgbaBuffer {
@@ -113,13 +185,22 @@ function toRgba(input: Float64Array, width: number, height: number): RgbaBuffer 
 
 export function resizeRgba(source: RgbaBuffer, destinationWidth: number, destinationHeight: number): RgbaBuffer {
   validateDimensions(destinationWidth, destinationHeight);
-  let pixels = toLinear(source); let width = source.width; let height = source.height;
-  const pre = prefilterDimensions(width, height, destinationWidth, destinationHeight);
-  if (pre.width !== width || pre.height !== height) {
-    pixels = filter(pixels, width, height, pre.width, pre.height, buildAreaAxisMap(width, pre.width), buildAreaAxisMap(height, pre.height));
-    width = pre.width; height = pre.height;
+  const pre = prefilterDimensions(source.width, source.height, destinationWidth, destinationHeight);
+  const prefilters = pre.width !== source.width || pre.height !== source.height;
+  // Whichever pass comes first reads the 8-bit source: a source that shrinks
+  // past 2x starts with the exact-area prefilter, anything else goes straight
+  // to bicubic. Either way the full-resolution linear copy is never allocated,
+  // which is where nearly all the memory used to go.
+  const first = prefilters
+    ? { width: pre.width, height: pre.height,
+        x: buildAreaAxisMap(source.width, pre.width), y: buildAreaAxisMap(source.height, pre.height) }
+    : { width: destinationWidth, height: destinationHeight,
+        x: buildBicubicAxisMap(source.width, destinationWidth), y: buildBicubicAxisMap(source.height, destinationHeight) };
+  let pixels = verticalPass(
+    horizontalPassFrom8Bit(source, first.width, first.x), first.width, first.height, first.y);
+  if (prefilters) {
+    pixels = filter(pixels, pre.width, pre.height, destinationWidth, destinationHeight,
+      buildBicubicAxisMap(pre.width, destinationWidth), buildBicubicAxisMap(pre.height, destinationHeight));
   }
-  const resized = filter(pixels, width, height, destinationWidth, destinationHeight,
-    buildBicubicAxisMap(width, destinationWidth), buildBicubicAxisMap(height, destinationHeight));
-  return toRgba(resized, destinationWidth, destinationHeight);
+  return toRgba(pixels, destinationWidth, destinationHeight);
 }

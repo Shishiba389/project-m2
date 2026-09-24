@@ -28,9 +28,16 @@ export const defaultExportOptions: ExportOptions = {
 
 export const SHORTCUTS: [string, string][] = [
   ["Ctrl + A", "Select all"], ["Ctrl + Backspace", "Remove images"], ["Enter", "Open in Editor"],
-  ["Ctrl + Z", "Undo"], ["Ctrl + Shift + Z", "Redo"], ["Space", "Compare original"],
+  ["Ctrl + Z", "Undo"], ["Ctrl + Shift + Z", "Redo"],
+  ["Space + drag", "Pan the workspace"], ["Ctrl + scroll", "Zoom about the pointer"],
+  ["Shift + 1", "Fit the page in view"], ["Shift + 2", "Zoom to selection"],
+  ["Drag on empty canvas", "Marquee select"], ["Shift + click", "Add to selection"],
+  ["Ctrl + A on canvas", "Select every object"], ["Ctrl + D", "Duplicate the layer"],
+  ["Scroll", "Pan vertically"], ["Shift + scroll", "Pan horizontally"],
+  ["\\", "Compare original"],
   ["Ctrl + Shift + F", "Focus mode"], ["Esc", "Exit focus mode"], ["Arrows", "Nudge object"],
-  ["Shift + Arrows", "Nudge ×10"], ["Right-click", "Image and preset menus"],
+  ["Shift + Arrows", "Nudge ×10"], ["Arrows on empty canvas", "Pan the workspace"],
+  ["Right-click", "Image and preset menus"],
 ];
 
 /** The real file where there is one, so the export list shows what ships. */
@@ -40,14 +47,22 @@ function Thumb({ asset }: { asset: Asset }) {
   return <div className={`product-placeholder product-${asset.kind}`} aria-hidden="true"><Package strokeWidth={1.25} /><span /></div>;
 }
 
-export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOptions, onStart, workflows = [], onSaveWorkflow, onApplyWorkflow }: {
+export function ExportDialog({ open, onOpenChange, queue, files, options, canvas, onOptions, onStart, workflows = [], onSaveWorkflow, onApplyWorkflow }: {
   open: boolean; onOpenChange: (value: boolean) => void; queue: Asset[];
+  /**
+   * How many files the run will write. It differs from the number of images
+   * whenever one has been placed on the canvas more than once: each copy is
+   * its own file, so the count has to be shown rather than inferred.
+   */
+  files?: number;
   options: ExportOptions; canvas: string; onOptions: (next: ExportOptions) => void; onStart: () => void;
   workflows?: ExportWorkflow[]; onSaveWorkflow?: (name: string) => void; onApplyWorkflow?: (workflow: ExportWorkflow) => void;
 }) {
   const [sizeUnit, setSizeUnit] = useState<"KB" | "MB">("MB");
   const selected = useMemo(() => new Set(options.selectedIds === null ? queue.map((asset) => asset.id) : options.selectedIds), [options.selectedIds, queue]);
   const selectedQueue = queue.filter((asset) => selected.has(asset.id));
+  /** PNG and TIFF - which is written as PNG - carry no quality to trade away. */
+  const lossless = options.format === "png" || options.format === "tiff";
   const estimate = selectedQueue.reduce((total, asset) => total + megabytes(asset), 0) * (options.format === "png" ? 1 : options.quality / 100);
   const missing = queue.filter((asset) => !asset.file).length;
 
@@ -79,10 +94,15 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
         <input id="dpi" className="export-input" type="number" min={1} max={2400} value={options.dpi}
           onChange={(event) => onOptions({ ...options, dpi: Number(event.target.value) })} />
         <label className="field-label" htmlFor="max-size">Maximum file size (optional)</label>
-        <div className="size-limit-row"><input id="max-size" className="export-input" type="number" min={1} placeholder="No limit"
+        <div className="size-limit-row"><input id="max-size" className="export-input" type="number" min={1} disabled={lossless}
+          placeholder={lossless ? "Needs a lossy format" : "No limit"}
           value={options.maxBytes ? (sizeUnit === "MB" ? (options.maxBytes / 1048576).toFixed(2) : Math.round(options.maxBytes / 1024)) : ""}
           onChange={(event) => onOptions({ ...options, maxBytes: event.target.value ? Number(event.target.value) * (sizeUnit === "MB" ? 1048576 : 1024) : null })} />
           <div className="format-chips size-units"><button className={sizeUnit === "KB" ? "active" : ""} onClick={() => setSizeUnit("KB")}>KB</button><button className={sizeUnit === "MB" ? "active" : ""} onClick={() => setSizeUnit("MB")}>MB</button></div></div>
+        {/* A size cap is met by lowering quality, and a lossless format has no
+            quality to lower. Offering the field anyway meant every file over
+            the limit failed to encode, and an export of nothing was downloaded. */}
+        {lossless && <p className="inspector-note">{options.format.toUpperCase()} is lossless, so a size limit cannot be met by re-encoding. Choose JPG or WebP to cap file size.</p>}
         <label className="check-row">
           <Checkbox checked={options.keepName} onCheckedChange={(value) => onOptions({ ...options, keepName: Boolean(value) })} />
           Keep original filename
@@ -96,7 +116,12 @@ export function ExportDialog({ open, onOpenChange, queue, options, canvas, onOpt
         </p>
       </section>
       <section className="export-list">
-        <div className="export-batch-head"><strong>{selectedQueue.length} of {queue.length} files · estimated {estimate.toFixed(1)} MB</strong>
+        <div className="export-batch-head"><strong>
+          {files !== undefined && files !== selectedQueue.length
+            ? `${files} files from ${selectedQueue.length} of ${queue.length} images`
+            : `${selectedQueue.length} of ${queue.length} files`}
+          {` · estimated ${estimate.toFixed(1)} MB`}
+        </strong>
           <Button variant="ghost" size="sm" onClick={() => onOptions({ ...options, selectedIds: [] })}>Select all</Button></div>
         {missing > 0 && <p className="export-warning"><TriangleAlert size={12} /> {missing} without a source file will be skipped</p>}
         {options.format === "tiff" && <p className="export-warning"><TriangleAlert size={12} /> TIFF cannot be encoded in a browser; PNG is written instead</p>}
@@ -133,14 +158,20 @@ export function ExportProgress({ run, done, bytes, queue, options, onCancel, onA
   const percent = run.total ? Math.round((run.done / run.total) * 100) : 100;
   const written = queue.slice(0, run.done).slice(-6);
   const good = run.done - run.failed.length;
+  // Nothing was written, so nothing was downloaded. Saying otherwise sends the
+  // reader hunting through their Downloads folder for a file that was never
+  // created, instead of at the error log that says why.
+  const empty = done && good === 0;
 
   return <Dialog open onOpenChange={onClose}><DialogContent className="export-dialog progress-dialog">
     <DialogHeader>
-      <DialogTitle>{done ? "Export downloaded" : "Exporting"}</DialogTitle>
+      <DialogTitle>{!done ? "Exporting" : empty ? "Export failed" : "Export downloaded"}</DialogTitle>
       <DialogDescription>
-        {done
-          ? `${good} of ${run.total} rendered · ${(bytes / 1048576).toFixed(1)} MB zip`
-          : `Rendering ${run.done} / ${run.total} (${percent}%)`}
+        {!done
+          ? `Rendering ${run.done} / ${run.total} (${percent}%)`
+          : empty
+            ? `Nothing was rendered, so no file was downloaded — the log below says why.`
+            : `${good} of ${run.total} rendered · ${(bytes / 1048576).toFixed(1)} MB zip`}
       </DialogDescription>
     </DialogHeader>
     {!done && <>
@@ -161,7 +192,7 @@ export function ExportProgress({ run, done, bytes, queue, options, onCancel, onA
       {run.failed.map((failure) => <span key={failure.name}>{failure.name}: {failure.reason}</span>)}
     </div>}
     <DialogFooter>
-      {done && <Button variant="outline" onClick={onAgain}>Download again</Button>}
+      {done && !empty && <Button variant="outline" onClick={onAgain}>Download again</Button>}
       <Button onClick={onClose}>{done ? "Done" : "Close"}</Button>
     </DialogFooter>
   </DialogContent></Dialog>;

@@ -12,8 +12,12 @@
  */
 import { begin } from "@/src/selfcheck";
 import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
-import { docFromPreset, outputName, presetById, type Asset, type Doc, type Format } from "@/src/flow";
+import {
+  assetKey, docFromPreset, frameKey, orderStack, outputName, placementKey, presetById,
+  type Asset, type Doc, type Format,
+} from "@/src/flow";
 import { fullCrop, fullPageImage, type ImageBox, type ImageElement } from "@/src/image-geometry";
+import { compose, identity, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
 import { attachImage, contentPageElement, createFrame } from "@/src/frame-geometry";
 import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
@@ -61,18 +65,81 @@ export type Layer = {
  * exporter never has to guess where the image it is exporting belongs in the
  * stack — it is simply one of these.
  */
-export function pageLayers(doc: Doc, assets: Asset[]): Layer[] {
+/**
+ * Every layer the canvas would draw, bottom to top.
+ *
+ * `subject` names the one instance this file is about.  When it is given,
+ * *other* instances of the same asset are left out: an image placed three
+ * times produces three files, and each shows its own copy in place and the
+ * other two hidden, so the three files are three layouts rather than three
+ * identical pictures.  Instances of every *other* asset stay, because they
+ * are the template the subject is being placed into.
+ */
+export function pageLayers(doc: Doc, assets: Asset[], subject?: string): Layer[] {
   const frames = doc.frames ?? [];
   const framed = new Set(frames.map((frame) => frame.imageId).filter((id): id is number => id !== null));
-  const free = assets.filter((asset) => asset.onCanvas && asset.file && !asset.corrupt && !framed.has(asset.id))
-    .map((asset) => ({ assetId: asset.id, element: asset.element, file: asset.file! }));
-  const inFrames = frames.flatMap((frame) => {
-    const asset = assets.find((item) => item.id === frame.imageId);
-    return asset?.file && !asset.corrupt && frame.content
-      ? [{ assetId: asset.id, element: contentPageElement(frame), file: asset.file, clip: frame.box, fit: "fill" as const }]
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  const free = (doc.placements ?? []).flatMap((placement) => {
+    const asset = byId.get(placement.assetId);
+    return asset?.file && !asset.corrupt && !framed.has(asset.id)
+      ? [{ key: placementKey(placement.id), assetId: asset.id, layer: { assetId: asset.id, element: placement.element, file: asset.file } }]
       : [];
   });
-  return [...free, ...inFrames];
+  const inFrames = frames.flatMap((frame) => {
+    const asset = byId.get(frame.imageId ?? -1);
+    return asset?.file && !asset.corrupt && frame.content
+      ? [{ key: frameKey(frame.id), assetId: asset.id, layer: { assetId: asset.id, element: contentPageElement(frame), file: asset.file, clip: frame.box, fit: "fill" as const } }]
+      : [];
+  });
+  const all = [...free, ...inFrames];
+  const subjectAsset = subject === undefined ? null : all.find((entry) => entry.key === subject)?.assetId ?? null;
+  const drawn = subjectAsset === null ? all
+    : all.filter((entry) => entry.assetId !== subjectAsset || entry.key === subject);
+  // Painted in the order the canvas shows. Without an arranged stack that is
+  // "every free image, then every frame", which is the order these two lists
+  // are built in, so an untouched document exports the way it always did.
+  const byKey = new Map(drawn.map((entry) => [entry.key, entry.layer]));
+  return orderStack(doc.stack, drawn.map((entry) => entry.key))
+    .flatMap((key) => { const layer = byKey.get(key); return layer ? [layer] : []; });
+}
+
+/**
+ * One entry per output file.
+ *
+ * The unit of export is an *instance*, not a source: three placements of one
+ * image are three files.  An asset with no instance at all is still exported -
+ * the canvas is a template and the asset is run through it - which is what
+ * makes a batch of fifty untouched imports work exactly as it did before
+ * anything could be placed twice.
+ */
+export type ExportUnit = {
+  key: string; asset: Asset; element: ImageElement;
+  /** The page as this file draws it, with the subject's other copies hidden. */
+  layers: Layer[];
+};
+export function exportUnits(doc: Doc, assets: Asset[]): ExportUnit[] {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  const usable = (asset: Asset | undefined): asset is Asset => Boolean(asset?.file) && !asset!.corrupt;
+  const units: ExportUnit[] = [];
+  const placed = new Set<number>();
+  for (const placement of doc.placements ?? []) {
+    const asset = byId.get(placement.assetId);
+    if (!usable(asset)) continue;
+    placed.add(asset.id);
+    units.push({ key: placementKey(placement.id), asset, element: placement.element, layers: [] });
+  }
+  for (const frame of doc.frames ?? []) {
+    const asset = byId.get(frame.imageId ?? -1);
+    if (!usable(asset) || !frame.content) continue;
+    placed.add(asset.id);
+    units.push({ key: frameKey(frame.id), asset, element: contentPageElement(frame), layers: [] });
+  }
+  for (const asset of assets) {
+    if (!usable(asset) || placed.has(asset.id)) continue;
+    units.push({ key: assetKey(asset.id), asset, element: asset.element, layers: [] });
+  }
+  // Each file has its own layer list, because each hides a different copy.
+  return units.map((unit) => ({ ...unit, layers: pageLayers(doc, assets, unit.key) }));
 }
 
 export const specFromDoc = (doc: Doc, assets: Asset[] = []): FrameSpec => ({
@@ -99,15 +166,35 @@ export function framePx(spec: FrameSpec): Rect {
   return boxPx(spec.element.box, spec);
 }
 
-/** Rotation and flip about a box's centre, shared by images and frames. */
-function transformAboutCentre(context: CanvasRenderingContext2D, box: ImageBox, page: { width: number; height: number }) {
-  if (!box.flipH && !box.flipV && !box.rotation) return;
+/**
+ * The rotation and mirror an element carries, about its own centre.
+ *
+ * This is returned as a matrix rather than pushed straight into the canvas so
+ * it can be asserted on, because one property of it is load-bearing: an
+ * axis-aligned element must produce the identity. The MINIMA resampler is
+ * separable and cannot express a rotation, so the certified path is
+ * `resizeRgba` drawing through an identity transform; rotation is a rigid
+ * transform layered on top of an already-resampled bitmap. If this function
+ * ever returned something other than the identity for an unrotated box, every
+ * ordinary batch export would silently start going through canvas filtering
+ * instead of through the bicubic pipeline.
+ */
+export function elementTransform(box: ImageBox, page: { width: number; height: number }): Mat3 {
+  if (!box.flipH && !box.flipV && !box.rotation) return identity();
   const cx = (box.x + box.w / 2) / 100 * page.width;
   const cy = (box.y + box.h / 2) / 100 * page.height;
-  context.translate(cx, cy);
-  context.scale(box.flipH ? -1 : 1, box.flipV ? -1 : 1);
-  context.rotate(box.rotation * Math.PI / 180);
-  context.translate(-cx, -cy);
+  return compose(
+    translation(cx, cy),
+    scaling(box.flipH ? -1 : 1, box.flipV ? -1 : 1),
+    rotation(box.rotation),
+    translation(-cx, -cy),
+  );
+}
+
+/** Rotation and flip about a box's centre, shared by images and frames. */
+function transformAboutCentre(context: CanvasRenderingContext2D, box: ImageBox, page: { width: number; height: number }) {
+  const matrix = elementTransform(box, page);
+  context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty);
 }
 
 /**
@@ -134,7 +221,30 @@ export const encodableFormat = (format: Format): OutFormat =>
 
 // The scaler keeps several linear-light buffers in memory. Refuse a render
 // before allocating them instead of freezing the browser tab.
-const MAX_RENDER_BYTES = 512 * 1024 * 1024;
+/**
+ * How much working memory one render may use.
+ *
+ * Measured, not guessed. The batch path already asks the browser for its own
+ * heap limit and allows a render half of it; the exporter hard-coded 512 MB
+ * instead, and 512 MB is not enough to export anything.
+ *
+ * The linear-light pipeline needs 36 bytes for every *source* pixel before it
+ * has done any work - the 8-bit source and its `Float64Array` copy are alive
+ * together - so a photograph the same size as the page it is being fitted
+ * into already costs 464 MB. Every export of an ordinary product shot failed
+ * with IMAGE_TOO_LARGE, which is what this cap was meant to prevent, not to
+ * cause.
+ *
+ * Only Chromium reports the limit, and a privacy setting can hide it there
+ * too. Assuming a single gigabyte when it is missing refuses photographs that
+ * a laptop handles without noticing, so the blind case assumes an ordinary
+ * desktop instead of the smallest machine imaginable.
+ */
+function renderBudget() {
+  const perf = performance as Performance & { memory?: { jsHeapSizeLimit: number } };
+  const measured = perf.memory?.jsHeapSizeLimit;
+  return measured ? Math.max(512 * 1024 * 1024, Math.floor(measured / 2)) : 1536 * 1024 * 1024;
+}
 
 /* ------------------------------------------------------------------ browser */
 
@@ -233,7 +343,11 @@ function drawLayer(
   const renderHeight = Math.max(1, Math.round(dest.h));
   validateDimensions(renderWidth, renderHeight);
   const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, renderWidth, renderHeight);
-  if (peakBytes > MAX_RENDER_BYTES) throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory`);
+  const budget = renderBudget();
+  if (peakBytes > budget) {
+    throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory, `
+      + `and this browser allows ${Math.floor(budget / 1_048_576)} MB. Resize the source down first, or export it on its own.`);
+  }
   const sourceX = Math.floor(crop.left * bitmap.width);
   const sourceY = Math.floor(crop.top * bitmap.height);
   const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
@@ -263,30 +377,37 @@ export const EXPORT_ZIP = "minima-export.zip";
  * A file that cannot be decoded is one skipped entry, not an aborted run.
  */
 export async function runExport(
-  queue: Asset[],
+  queue: ExportUnit[],
   spec: FrameSpec,
   naming: { format: Format; quality: number; suffix: string; keepName: boolean; customNames?: Record<number, string>; dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" },
   onProgress: (progress: ExportProgress) => void,
   shouldStop: () => boolean = () => false,
 ): Promise<{ zip: Uint8Array; progress: ExportProgress; stopped: boolean }> {
   const format = encodableFormat(naming.format);
+  // A saved workflow can still pair a byte cap with a lossless format, which
+  // the dialog no longer offers. Dropping the cap gives the user their files;
+  // honouring it gave them an empty zip and one error per image.
+  const maxBytes = format === "png" ? undefined : naming.maxBytes ?? undefined;
   const entries: ZipEntry[] = [];
   const progress: ExportProgress = { done: 0, total: queue.length, current: "", failed: [] };
   const taken = new Set<string>();
 
-  for (const asset of queue) {
+  for (const unit of queue) {
+    const asset = unit.asset;
     if (shouldStop()) return { zip: makeZip(entries), progress, stopped: true };
     progress.current = asset.name;
     onProgress({ ...progress, failed: [...progress.failed] });
     try {
       if (!asset.file) throw new Error("no source file");
-      // The queued image is drawn exactly once, in its own place in the stack
-      // when it is a page layer, and from `element` when it is not.
+      // The subject is drawn exactly once: in its own place in the stack when
+      // the document places it there, and from `element` when it does not -
+      // the case where the canvas is a template and this image is being run
+      // through it.
       const assetSpec = {
-        ...spec, element: asset.element, queuedAssetId: asset.id,
-        drawElement: !spec.layers.some((layer) => layer.assetId === asset.id),
+        ...spec, layers: unit.layers, element: unit.element, queuedAssetId: asset.id,
+        drawElement: !unit.layers.some((layer) => layer.assetId === asset.id),
       };
-      const data = await renderFramed(asset.file, assetSpec, format, naming.quality, naming);
+      const data = await renderFramed(asset.file, assetSpec, format, naming.quality, { ...naming, maxBytes });
       const custom = naming.customNames?.[asset.id]?.trim();
       let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
       let n = 2;
@@ -368,13 +489,115 @@ export function demo() {
     "so the content fills its box instead of shrinking inside it");
 
   // Layer order is the page's order: free images as they are listed, frames on
-  // top, and the image being exported is simply one of them.
-  const freeAsset = { id: 2, file: {} as File, element: fullPageImage(), src: { w: 10, h: 10 }, onCanvas: true } as Asset;
+  // top, and the image being exported is simply one of them. A free image is
+  // on the canvas because the document places it there, not because a flag on
+  // the asset says so - an asset is a source, a placement is an appearance.
+  const freeAsset = { id: 2, file: {} as File, element: fullPageImage(), src: { w: 10, h: 10 } } as Asset;
   const framedAsset = { id: 1, file: {} as File, element: fullPageImage(), src: { w: 100, h: 100 } } as Asset;
-  const stack = pageLayers(fitPage, [freeAsset, framedAsset]);
+  const placedPage = { ...fitPage, placements: [{ id: "free", assetId: 2, element: fullPageImage() }] };
+  const stack = pageLayers(placedPage, [freeAsset, framedAsset]);
   console.assert(stack.length === 2 && stack[0].assetId === 2 && stack[1].assetId === 1, "free images draw below frames");
   console.assert(!stack[0].clip && Boolean(stack[1].clip), "and only the framed layer is clipped");
-  console.assert(pageLayers(fitPage, [{ ...freeAsset, corrupt: true }, framedAsset]).length === 1, "an unreadable source is not a layer");
+  console.assert(pageLayers(placedPage, [{ ...freeAsset, corrupt: true }, framedAsset]).length === 1, "an unreadable source is not a layer");
+  console.assert(pageLayers(fitPage, [freeAsset, framedAsset]).length === 1,
+    "and an asset the document never placed is not a layer at all");
+
+  /* ------------------------------------------- the bicubic path stays bicubic
+
+     `resizeRgba` is separable: horizontal then vertical, so it cannot express
+     a rotation.  The contract is that it does the scaling - the part that
+     decides quality - and the canvas only ever adds a rigid transform on top.
+     An unrotated element must therefore reach the canvas untransformed, or an
+     ordinary batch resize would be resampled twice, the second time by the
+     browser's own filter, and `resize-parity.test.ts` would have nothing to
+     guard.  This is the assertion that keeps that true. */
+  const flat = { ...fullPageImage().box, x: 10, y: 20, w: 50, h: 30 };
+  const plain = elementTransform(flat, framedPage);
+  console.assert(plain.a === 1 && plain.b === 0 && plain.c === 0 && plain.d === 1 && plain.tx === 0 && plain.ty === 0,
+    "an axis-aligned element draws through the identity, so the resampler owns every pixel");
+
+  // Rotation and mirrors do reach the file: the editor's geometry is not a
+  // preview-only decoration.
+  const turned = elementTransform({ ...flat, rotation: 90 }, framedPage);
+  console.assert(Math.abs(turned.a) < 1e-12 && Math.abs(turned.b - 1) < 1e-12,
+    "a quarter turn reaches the canvas as a real rotation");
+  const centre = { x: (flat.x + flat.w / 2) / 100 * framedPage.width, y: (flat.y + flat.h / 2) / 100 * framedPage.height };
+  const moved = {
+    x: turned.a * centre.x + turned.c * centre.y + turned.tx,
+    y: turned.b * centre.x + turned.d * centre.y + turned.ty,
+  };
+  console.assert(Math.abs(moved.x - centre.x) < 1e-9 && Math.abs(moved.y - centre.y) < 1e-9,
+    "and turns the element about its own centre, which therefore does not move");
+  const mirrored = elementTransform({ ...flat, flipH: true }, framedPage);
+  console.assert(mirrored.a === -1 && mirrored.d === 1, "a horizontal mirror reaches the file as one");
+
+  /* ------------------------------------------------ the stack reaches the file
+
+     A layers panel is a lie if the order it shows is not the order that is
+     painted.  These cases are the ones that matter: no arranged stack, which
+     every fresh document is; a stack that reverses the default, which is the
+     whole point of the panel; and a stack naming something that is gone. */
+  const place = (id: string, assetId: number, x = 0) =>
+    ({ id, assetId, element: { ...fullPageImage(), box: { ...fullPageImage().box, x, w: 20, h: 20 } } });
+  const stackable = { ...fitPage, frames: [testFrame], placements: [place("one", 2)] };
+  const stackAssets = [freeAsset, framedAsset];
+  console.assert(pageLayers(stackable, stackAssets).map((layer) => layer.assetId).join() === "2,1",
+    "with no arranged stack the free image is below the frame, as it always was");
+  const lifted = pageLayers({ ...stackable, stack: [frameKey(testFrame.id), placementKey("one")] }, stackAssets);
+  console.assert(lifted.map((layer) => layer.assetId).join() === "1,2", "an arranged stack reorders the file too");
+  console.assert(Boolean(lifted[0].clip) && !lifted[1].clip, "and each layer keeps its own clipping when it moves");
+  console.assert(pageLayers({ ...stackable, stack: ["place-gone", placementKey("one")] }, stackAssets).length === 2,
+    "a stack entry for something that is gone does not drop a real layer");
+
+  /* --------------------------------------- one instance per file (\u00a722)
+
+     An image placed three times is three files, and each one shows its own
+     copy with the other two hidden - otherwise the three would be identical
+     and the extra names would be a lie.  Instances of *other* assets stay:
+     they are the template the subject is being placed into. */
+  const thrice = {
+    ...fitPage, frames: [testFrame],
+    placements: [place("a", 2, 0), place("b", 2, 30), place("c", 2, 60)],
+  };
+  console.assert(pageLayers(thrice, stackAssets).length === 4, "the canvas itself shows all three copies and the frame");
+  const first = pageLayers(thrice, stackAssets, placementKey("a"));
+  console.assert(first.length === 2, "a file keeps one copy of its own image, and drops the other two");
+  console.assert(first.some((layer) => Boolean(layer.clip)), "but keeps the other asset's layer, which is the template");
+  // The point of three files is that they differ: each keeps its own copy,
+  // in its own position.
+  const second = pageLayers(thrice, stackAssets, placementKey("b"));
+  console.assert(first.find((layer) => !layer.clip)!.element.box.x === 0, "the first file keeps the first copy");
+  console.assert(second.find((layer) => !layer.clip)!.element.box.x === 30, "and the second keeps the second, where it sits");
+  console.assert(pageLayers(thrice, stackAssets, frameKey(testFrame.id)).length === 4,
+    "a frame's own file is unaffected by copies of a different asset");
+  console.assert(pageLayers(thrice, stackAssets, "place-nothing").length === 4,
+    "an unknown subject hides nothing rather than emptying the page");
+
+  /* ------------------------------------------------------------ the queue */
+
+  const units = exportUnits(thrice, stackAssets);
+  console.assert(units.length === 4, "three placements and one framed image are four files");
+  console.assert(units.filter((unit) => unit.asset.id === 2).length === 3, "the thrice-placed image is exported three times");
+  // An asset nobody has placed is still exported: the canvas is a template.
+  const spare = { id: 7, file: {} as File, element: fullPageImage(), src: { w: 10, h: 10 } } as Asset;
+  const withSpare = exportUnits(thrice, [...stackAssets, spare]);
+  console.assert(withSpare.length === 5 && withSpare.some((unit) => unit.key === assetKey(7)),
+    "an asset with no placement is run through the canvas as a template");
+  console.assert(exportUnits(thrice, [{ ...spare, corrupt: true } as Asset]).length === 0,
+    "an unreadable source is never a file");
+  console.assert(new Set(units.map((unit) => unit.key)).size === units.length, "every unit has its own key");
+
+  /* The rule behind a bug worth remembering.  An asset the document places is
+     not *also* exported as a template - it is on the canvas already.  So a
+     duplicate that replaces the subject instead of joining it leaves exactly
+     one instance, the canvas shows one image, and the export writes one file,
+     which is precisely what it did. */
+  const solo = exportUnits({ ...fitPage, placements: [place("solo", 2)] }, [freeAsset]);
+  console.assert(solo.length === 1, "one placement is one file, not one plus a template copy");
+  const pair = exportUnits({ ...fitPage, placements: [place("l", 2, 0), place("r", 2, 40)] }, [freeAsset]);
+  console.assert(pair.length === 2, "and two placements are two files");
+  console.assert(pair[0].layers.length === 1 && pair[1].layers.length === 1,
+    "each of the two draws one copy, so the two files differ");
 
   console.assert(specFromDoc({ fit: "Fill" } as Doc).fit === "cover", "Fill maps to cover");
   console.assert(specFromDoc({ fit: "Fit" } as Doc).fit === "contain", "Fit maps to contain");

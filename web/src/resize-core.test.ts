@@ -25,7 +25,33 @@ console.assert(averaged === 188, "strong downscale averages in linear light, not
 
 const alphaEdge = resizeRgba({ width: 2, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 0]) }, 1, 1).data;
 console.assert(alphaEdge[0] === 255 && alphaEdge[1] === 0, "premultiplied alpha prevents hidden-green fringe");
-console.assert(estimatePeakBytes(100, 100, 50, 50) === 100 * 100 * 36 + Math.max(100 * 100 + 100 * 100, 50 * 100) * 32 + 50 * 50 * 4, "memory formula is exact");
+// The estimate counts the buffers that are actually allocated. A downscale
+// past 2x prefilters and pays for that pass; a gentler one does not, and used
+// to be billed for it anyway - which refused ordinary photographs as too large.
+// Shrinking past 2x prefilters to 80x80 first. That pass reads the 8-bit
+// source directly, so it pays 4 bytes a source pixel and not 36.
+console.assert(estimatePeakBytes(100, 100, 40, 40)
+  === Math.max(100 * 100 * 4 + (80 * 100 + 80 * 80) * 32, (80 * 80 + 40 * 80 + 40 * 40) * 32) + 40 * 40 * 4,
+  "a prefiltered downscale never materialises the source in linear light");
+// Exactly 2x does not prefilter, so the whole resize is one pass read straight
+// off the bytes: four bytes a source pixel, never thirty-six.
+console.assert(estimatePeakBytes(100, 100, 50, 50)
+  === 100 * 100 * 4 + (50 * 100 + 50 * 50) * 32 + 50 * 50 * 4,
+  "a downscale that does not prefilter never copies the source into linear light");
+// The conversion is a table, so it holds exactly the values the function
+// returns - that is what lets it be read once per tap instead of once per pixel.
+for (const value of [0, 1, 10, 128, 254, 255]) {
+  console.assert(srgbToLinear(value / 255) === Float64Array.from({ length: 256 }, (_, v) => srgbToLinear(v / 255))[value],
+    `the linear table holds exactly srgbToLinear(${value}/255)`);
+}
+// The property that matters on a large photograph: shrinking it further must
+// not cost more memory than shrinking it a little.
+console.assert(estimatePeakBytes(4000, 3000, 400, 300) < estimatePeakBytes(4000, 3000, 2000, 1500),
+  "a big source shrunk hard costs less than the same source shrunk gently");
+console.assert(estimatePeakBytes(4000, 3000, 400, 300) < 4000 * 3000 * 36,
+  "and never pays 36 bytes for every one of its pixels");
+console.assert(estimatePeakBytes(8, 8, 32, 32) === 8 * 8 * 4 + (32 * 8 + 32 * 32) * 32 + 32 * 32 * 4,
+  "an upscale never prefilters either");
 let invalid = false; try { validateDimensions(20_000, 20_000); } catch { invalid = true; }
 console.assert(invalid, "100 MP destination cap is enforced");
 

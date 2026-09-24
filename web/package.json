@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && tsx src/resize-core.test.ts && tsx src/editor-engine.test.ts && tsx src/image-geometry.test.ts && tsx src/frame-geometry.test.ts && tsx src/flow.ts && tsx src/batch.ts && tsx src/exportrun.ts && tsx src/smoke.tsx"
+    "check": "tsc --noEmit && tsx src/resize-core.test.ts && tsx src/editor-engine.test.ts && tsx src/image-geometry.test.ts && tsx src/frame-geometry.test.ts && tsx src/mat3.test.ts && tsx src/viewport.test.ts && tsx src/snap.test.ts && tsx src/gestures.test.ts && tsx src/selection.test.ts && tsx src/resize-parity.test.ts && tsx src/flow.ts && tsx src/batch.ts && tsx src/exportrun.ts && tsx src/smoke.tsx"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

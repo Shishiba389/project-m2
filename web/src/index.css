@@ -1,12 +1,25 @@
 @import "tailwindcss";
 
-:root { --background:#151515;--foreground:#f4f4f4;--card:#1c1c1c;--card-foreground:#f4f4f4;--popover:#242424;--popover-foreground:#f4f4f4;--primary:#f4f4f4;--primary-foreground:#111;--secondary:#2b2b2b;--secondary-foreground:#f4f4f4;--muted:#292929;--muted-foreground:#a7a7a7;--accent:#343434;--accent-foreground:#fff;--destructive:#d9584d;--border:#373737;--input:#3b3b3b;--ring:#cfcfcf;--radius:.5rem;--sidebar:#181818;--sidebar-foreground:#eee;--sidebar-accent:#303030;--sidebar-accent-foreground:#fff;--sidebar-border:#353535;--sidebar-ring:#aaa; }
+/* The app has one palette.
+ *
+ * Tailwind's `dark:` variant defaults to the operating system's colour
+ * scheme, and shadcn's components are full of `dark:` utilities - so on a
+ * desktop set to dark, inputs, tooltips and menus kept restyling themselves
+ * while everything the app paints stayed light. Removing the app's own dark
+ * theme did not touch that, because it was never the app's theme doing it.
+ *
+ * Rebinding the variant to a class nothing ever sets switches every `dark:`
+ * utility off for good, including in any component added later. */
+@custom-variant dark (&:where(.never-dark, .never-dark *));
+
+:root { --radius:.5rem; }
 @theme inline { --color-background:var(--background);--color-foreground:var(--foreground);--color-card:var(--card);--color-card-foreground:var(--card-foreground);--color-popover:var(--popover);--color-popover-foreground:var(--popover-foreground);--color-primary:var(--primary);--color-primary-foreground:var(--primary-foreground);--color-secondary:var(--secondary);--color-secondary-foreground:var(--secondary-foreground);--color-muted:var(--muted);--color-muted-foreground:var(--muted-foreground);--color-accent:var(--accent);--color-accent-foreground:var(--accent-foreground);--color-destructive:var(--destructive);--color-border:var(--border);--color-input:var(--input);--color-ring:var(--ring);--radius-sm:calc(var(--radius) - 3px);--radius-md:var(--radius);--radius-lg:calc(var(--radius) + 3px);--font-sans:"Inter","Segoe UI",sans-serif; }
 
 /* Chrome palette. Dark values match the literals they replaced, so dark mode is unchanged. */
-:root{--app:#111;--app-2:#151515;--chrome:#171717;--chrome-2:#161616;--chrome-3:#191919;--chrome-4:#181818;--pane:#121212;--panel:#1a1a1a;--panel-2:#1c1c1c;--tile:#1d1d1d;--tile-2:#202020;--tile-3:#222;--tile-4:#242424;--tile-5:#272727;--tile-6:#282828;--control:#292929;--control-2:#2b2b2b;--control-3:#303030;--line:#333;--line-2:#343434;--line-3:#353535;--line-4:#373737;--line-5:#383838;--line-6:#393939;--line-7:#3b3b3b;--ink:#f2f2f2;--ink-2:#f4f4f4;--ink-3:#eee;--ink-4:#ddd;--ink-5:#ccc;--ink-6:#bbb;--ink-7:#b9b9b9;--ink-8:#aaa;--ink-9:#a5a5a5;--ink-10:#888;--ink-11:#8f8f8f;--ink-12:#777;--ink-on-fill:#ffffff;--fill-strong:#4a4a4a;--on-strong:#ffffff}
-:root[data-theme="light"]{--app:#c9cbce;--app-2:#d4d6d9;--chrome:#f7f8f9;--chrome-2:#f2f3f5;--chrome-3:#eceef0;--chrome-4:#f4f5f6;--pane:#e7e9ec;--panel:#fcfcfd;--panel-2:#ffffff;--tile:#ffffff;--tile-2:#ffffff;--tile-3:#ffffff;--tile-4:#f4f5f7;--tile-5:#eef0f2;--tile-6:#e6e8eb;--control:#e4e7ea;--control-2:#ffffff;--control-3:#c3c8cd;--line:#d2d6da;--line-2:#c6cbd0;--line-3:#c6cbd0;--line-4:#d0d4d9;--line-5:#c9ced3;--line-6:#bfc5cb;--line-7:#b7bec5;--ink:#11151a;--ink-2:#0c1015;--ink-3:#161b21;--ink-4:#1d232a;--ink-5:#2a313a;--ink-6:#333b45;--ink-7:#39424c;--ink-8:#454f5a;--ink-9:#4d5865;--ink-10:#5c6875;--ink-11:#56616d;--ink-12:#66727f;--ink-on-fill:var(--ink-2);--fill-strong:#1d232a;--on-strong:#ffffff;--background:#f7f8f9;--foreground:#11151a;--card:#ffffff;--card-foreground:#11151a;--popover:#ffffff;--popover-foreground:#11151a;--primary:#1a2028;--primary-foreground:#fbfcfd;--secondary:#e4e7ea;--secondary-foreground:#11151a;--muted:#e9ecef;--muted-foreground:#56616d;--accent:#d7dce1;--accent-foreground:#0c1015;--destructive:#b3271c;--border:#c6cbd0;--input:#b7bec5;--ring:#384250;--sidebar:#f2f3f5;--sidebar-foreground:#11151a;--sidebar-accent:#d7dce1;--sidebar-accent-foreground:#0c1015;--sidebar-border:#c6cbd0;--sidebar-ring:#6b7683}
-@media(prefers-color-scheme:light){:root:not([data-theme="dark"]){--app:#c9cbce;--app-2:#d4d6d9;--chrome:#f7f8f9;--chrome-2:#f2f3f5;--chrome-3:#eceef0;--chrome-4:#f4f5f6;--pane:#e7e9ec;--panel:#fcfcfd;--panel-2:#ffffff;--tile:#ffffff;--tile-2:#ffffff;--tile-3:#ffffff;--tile-4:#f4f5f7;--tile-5:#eef0f2;--tile-6:#e6e8eb;--control:#e4e7ea;--control-2:#ffffff;--control-3:#c3c8cd;--line:#d2d6da;--line-2:#c6cbd0;--line-3:#c6cbd0;--line-4:#d0d4d9;--line-5:#c9ced3;--line-6:#bfc5cb;--line-7:#b7bec5;--ink:#11151a;--ink-2:#0c1015;--ink-3:#161b21;--ink-4:#1d232a;--ink-5:#2a313a;--ink-6:#333b45;--ink-7:#39424c;--ink-8:#454f5a;--ink-9:#4d5865;--ink-10:#5c6875;--ink-11:#56616d;--ink-12:#66727f;--background:#f7f8f9;--foreground:#11151a;--card:#ffffff;--card-foreground:#11151a;--popover:#ffffff;--popover-foreground:#11151a;--primary:#1a2028;--primary-foreground:#fbfcfd;--secondary:#e4e7ea;--secondary-foreground:#11151a;--muted:#e9ecef;--muted-foreground:#56616d;--accent:#d7dce1;--accent-foreground:#0c1015;--destructive:#b3271c;--border:#c6cbd0;--input:#b7bec5;--ring:#384250;--sidebar:#f2f3f5;--sidebar-foreground:#11151a;--sidebar-accent:#d7dce1;--sidebar-accent-foreground:#0c1015;--sidebar-border:#c6cbd0;--sidebar-ring:#6b7683}}
+/* The only chrome palette.  Dark mode was removed: the editor is judged
+   against printed and marketplace artwork, which is viewed on white, and a
+   second palette was one more thing for every new surface to get wrong. */
+:root{--app:#c9cbce;--app-2:#d4d6d9;--chrome:#f7f8f9;--chrome-2:#f2f3f5;--chrome-3:#eceef0;--chrome-4:#f4f5f6;--pane:#e7e9ec;--panel:#fcfcfd;--panel-2:#ffffff;--tile:#ffffff;--tile-2:#ffffff;--tile-3:#ffffff;--tile-4:#f4f5f7;--tile-5:#eef0f2;--tile-6:#e6e8eb;--control:#e4e7ea;--control-2:#ffffff;--control-3:#c3c8cd;--line:#d2d6da;--line-2:#c6cbd0;--line-3:#c6cbd0;--line-4:#d0d4d9;--line-5:#c9ced3;--line-6:#bfc5cb;--line-7:#b7bec5;--ink:#11151a;--ink-2:#0c1015;--ink-3:#161b21;--ink-4:#1d232a;--ink-5:#2a313a;--ink-6:#333b45;--ink-7:#39424c;--ink-8:#454f5a;--ink-9:#4d5865;--ink-10:#5c6875;--ink-11:#56616d;--ink-12:#66727f;--ink-on-fill:var(--ink-2);--fill-strong:#1d232a;--on-strong:#ffffff;--background:#f7f8f9;--foreground:#11151a;--card:#ffffff;--card-foreground:#11151a;--popover:#ffffff;--popover-foreground:#11151a;--primary:#1a2028;--primary-foreground:#fbfcfd;--secondary:#e4e7ea;--secondary-foreground:#11151a;--muted:#e9ecef;--muted-foreground:#56616d;--accent:#d7dce1;--accent-foreground:#0c1015;--destructive:#b3271c;--border:#c6cbd0;--input:#b7bec5;--ring:#384250;--sidebar:#f2f3f5;--sidebar-foreground:#11151a;--sidebar-accent:#d7dce1;--sidebar-accent-foreground:#0c1015;--sidebar-border:#c6cbd0;--sidebar-ring:#6b7683}
 *{box-sizing:border-box}html,body{margin:0;background:var(--app-2);color:var(--ink);font-family:Inter,"Segoe UI",sans-serif}button,input{font:inherit}button{cursor:pointer}button:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .minima-app{min-height:100vh;display:grid;grid-template:44px minmax(0,1fr) 34px/66px minmax(0,1fr);overflow:hidden;background:var(--app)}.topbar{grid-column:1/-1;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;border-bottom:1px solid var(--line);background:var(--chrome);padding:0 10px;z-index:5}.topbar-left,.topbar-actions{display:flex;align-items:center;gap:5px}.topbar-actions{justify-content:flex-end;color:var(--ink-8)}.topbar button{width:34px;height:34px}.brand-mark{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;letter-spacing:.09em}.document-name{font-size:13px;font-weight:500;color:var(--ink-4)}.zoom-control{display:flex;gap:9px;align-items:center;font-size:12px;margin:0 6px}
 .rail{grid-row:2/-1;display:flex;flex-direction:column;justify-content:space-between;border-right:1px solid var(--line-2);background:var(--chrome);padding:8px 6px}.rail-main{display:grid;gap:5px}.rail button{min-height:54px;color:var(--ink-9);border:0;border-radius:7px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:11px;transition:.18s ease}.rail button svg{width:18px}.rail button:hover,.rail button.active{background:var(--control-3);color:var(--ink-on-fill)}
@@ -14,7 +27,7 @@
 .product-placeholder{min-height:125px;width:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;background:linear-gradient(145deg,#ecebe8,#cfcfca);color:var(--ink-12);overflow:hidden}.product-placeholder svg{width:42%;height:42%;max-width:70px}.product-placeholder span{font-size:9px;letter-spacing:.16em;font-weight:700}.product-beauty{background:linear-gradient(145deg,#eee9e7,#d6c4bd);color:#876f69}.product-fashion{background:linear-gradient(145deg,#ebe8e2,#c8c1b7);color:#746f66}.product-bottle{background:linear-gradient(145deg,#eeeae4,#d8cab8);color:#88765c}.product-large{min-height:0;height:54%;width:72%;background:transparent;color:#5f5f5f}.product-large svg{width:65%;height:65%;max-width:280px}.product-large span{font-size:11px}.status-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:99px;font-size:10px;line-height:1;color:#fff}.status-completed{background:#2c8455}.status-pending{background:#9a791e}.status-warning{background:#a24231}.status-error{background:#a53d3d}.status-dot{width:6px;height:6px;border-radius:50%;background:#ffd972}
 .inspector{grid-column:2;border-left:1px solid var(--line-2);background:var(--panel);display:flex;flex-direction:column;min-height:0}.inspector-heading{height:45px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding:0 8px 0 14px;font-size:13px}.inspector-heading button{width:32px;height:32px}.inspector-body{padding:12px 13px;overflow:auto;display:flex;flex-direction:column;gap:9px}.field-label{color:var(--ink-8);font-size:11px;margin-top:3px}.dimension-row{display:grid;grid-template-columns:1fr 12px 1fr 18px;gap:5px;align-items:center;color:var(--ink-12);font-size:11px}.dimension-row input,.export-input{width:100%;background:var(--control-2);color:var(--ink);border:1px solid var(--line-6);border-radius:6px;padding:8px;font-size:12px}.check-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-5);min-height:32px}.inspector .segmented button{flex:1;justify-content:center}.alignment-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.alignment-grid button{height:31px;border:1px solid var(--line-6);border-radius:5px;color:var(--ink-8);background:var(--tile-6);display:grid;place-items:center}.alignment-grid button.active{background:var(--fill-strong);color:var(--on-strong)}.alignment-grid svg{width:15px}.slider-label{display:flex;justify-content:space-between;color:var(--ink-8);font-size:11px;margin-top:8px}.slider-label strong{color:var(--ink-3)}.focus-mode-button{display:flex;align-items:center;gap:8px;border:1px solid var(--line-5);color:var(--ink-5);background:var(--tile-4);padding:9px;border-radius:6px;font-size:12px;margin-top:7px}.focus-mode-button kbd{margin-left:auto}kbd{border:1px solid #444;border-bottom-width:2px;border-radius:5px;background:var(--tile-6);padding:3px 7px;color:var(--ink-6);font-size:10px}.engine-note{display:flex;align-items:center;gap:9px;border-top:1px solid var(--line);padding-top:12px;margin-top:4px}.engine-note svg{width:16px}.engine-note div{display:flex;flex-direction:column}.engine-note strong{font-size:11px}.engine-note span{color:var(--ink-10);font-size:10px}.inspector-footer{margin-top:auto;border-top:1px solid var(--line);padding:10px 12px}.apply-button{width:100%}.processing{display:grid;gap:5px;color:var(--ink-8);font-size:10px;margin-bottom:8px}
 .statusbar{grid-column:2;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;border-top:1px solid var(--line-2);background:var(--chrome);padding:0 10px;color:var(--ink-11);font-size:10px}.statusbar>span:last-child{text-align:right}.status-actions{display:flex;gap:6px;align-items:center}.status-actions button{height:27px;font-size:10px}.view-switch button{padding:4px 8px}.view-switch svg{width:12px}
-.editor-pane{display:grid;grid-template-rows:minmax(0,1fr) 108px}.editor-stage{min-height:0;display:grid;place-items:center;padding:20px;background:#e8e8e8}.canvas{position:relative;display:flex;align-items:center;justify-content:center;background:#f6f6f6;box-shadow:0 2px 14px #0002}.portrait-canvas{height:min(100%,620px);aspect-ratio:9/13;max-width:76%}.safe-area{position:absolute;inset:10% 16.66%;border:1px dashed var(--ink-10);pointer-events:none}.selection-bounds{position:absolute;inset:5%;border:1px solid #7c7c7c}.selection-bounds i{position:absolute;width:7px;height:7px;background:#fff;border:1px solid #555}.selection-bounds i:nth-child(1){left:-4px;top:-4px}.selection-bounds i:nth-child(2){right:-4px;top:-4px}.selection-bounds i:nth-child(3){left:-4px;bottom:-4px}.selection-bounds i:nth-child(4){right:-4px;bottom:-4px}.filmstrip{display:flex;gap:7px;overflow-x:auto;background:var(--chrome-3);padding:8px;border-top:1px solid var(--line)}.filmstrip button{position:relative;min-width:180px;border:1px solid var(--line);border-radius:7px;background:var(--tile-5);color:var(--ink-6);display:grid;grid-template:1fr 1fr/55px 1fr;gap:2px 8px;padding:5px;text-align:left}.filmstrip button.active{border-color:var(--ink-6)}.filmstrip .product-placeholder{grid-row:1/3;min-height:80px}.filmstrip button>span{font-size:10px;align-self:end}.filmstrip .status-badge{align-self:start;justify-self:start}
+.editor-pane{display:grid;grid-template-rows:minmax(0,1fr) 108px}.editor-stage{min-height:0;display:grid;place-items:center;padding:20px;background:#e8e8e8}.portrait-canvas{height:min(100%,620px);aspect-ratio:9/13;max-width:76%}.safe-area{position:absolute;inset:10% 16.66%;border:1px dashed var(--ink-10);pointer-events:none}.selection-bounds{position:absolute;inset:5%;border:1px solid #7c7c7c}.selection-bounds i{position:absolute;width:7px;height:7px;background:#fff;border:1px solid #555}.selection-bounds i:nth-child(1){left:-4px;top:-4px}.selection-bounds i:nth-child(2){right:-4px;top:-4px}.selection-bounds i:nth-child(3){left:-4px;bottom:-4px}.selection-bounds i:nth-child(4){right:-4px;bottom:-4px}.filmstrip{display:flex;gap:7px;overflow-x:auto;background:var(--chrome-3);padding:8px;border-top:1px solid var(--line)}.filmstrip button{position:relative;min-width:180px;border:1px solid var(--line);border-radius:7px;background:var(--tile-5);color:var(--ink-6);display:grid;grid-template:1fr 1fr/55px 1fr;gap:2px 8px;padding:5px;text-align:left}.filmstrip button.active{border-color:var(--ink-6)}.filmstrip .product-placeholder{grid-row:1/3;min-height:80px}.filmstrip button>span{font-size:10px;align-self:end}.filmstrip .status-badge{align-self:start;justify-self:start}
 .compare-pane{padding:14px}.compare-labels{display:grid;grid-template-columns:1fr 1fr;gap:14px;text-align:center;color:var(--ink-6);font-size:12px;margin-bottom:8px}.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;height:calc(100% - 140px);min-height:320px}.compare-canvas{position:relative;display:flex;align-items:center;justify-content:center;border-radius:8px;background:#f5f5f3;overflow:hidden}.compare-canvas.original .product-large{width:45%;height:45%}.compare-canvas.resized .product-large{width:82%;height:60%}.mini-strip{height:92px;display:flex;gap:10px;padding-top:12px;overflow:hidden}.mini-strip .product-placeholder{width:140px;min-width:140px;min-height:75px;border-radius:6px}.review-pane{padding:20px}.review-heading{display:flex;justify-content:space-between;align-items:end;margin-bottom:18px}.review-heading h1{margin:0;font-size:20px}.review-heading p{color:var(--ink-10);font-size:12px;margin:5px 0 0}.review-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}.review-card{display:flex;flex-direction:column;gap:7px;background:var(--tile-3);border:1px solid var(--line);border-radius:8px;padding:8px}.review-card strong{font-size:11px}.review-card>span:last-child{color:var(--ink-8);font-size:11px}.auto-fix{margin-top:16px;float:right}
 .drop-zone{width:min(480px,90vw);aspect-ratio:1.6;border:1px dashed #bcbcbc;border-radius:14px;color:var(--ink-4);background:var(--tile-4);box-shadow:0 7px 18px #0003;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;transition:.2s ease}.drop-zone:hover,.drop-zone.dragging{transform:scale(1.01);border-color:#fff;background:#2a2a2a}.drop-zone strong{font-size:18px}.drop-zone span{color:var(--ink-8)}.drop-zone small{color:#747474;margin-top:7px}.drop-icon{display:flex;gap:4px;color:var(--ink-3)!important}.drop-icon svg{width:40px;height:40px}
 .full-pane{grid-column:1/-1;min-height:0;background:var(--chrome)}.presets-pane{display:grid;grid-template-columns:260px minmax(300px,1fr) 270px}.preset-categories,.preset-list,.preset-detail,.settings-pane section{padding:18px;border-right:1px solid var(--line)}.preset-categories h1{font-size:18px;margin:0 0 22px}.preset-categories button,.preset-list button{width:100%;border:0;color:var(--ink-6);background:transparent;padding:10px;border-radius:6px;display:flex;align-items:center;gap:8px;font-size:13px;text-align:left}.preset-categories button.active,.preset-list button.active{background:var(--fill-strong);color:var(--on-strong)}.preset-list>span{color:var(--ink-10);font-size:11px;display:block;margin-bottom:8px}.preset-detail h2,.settings-pane h2{font-size:14px;margin:0 0 16px}.preset-preview{height:210px;position:relative;background:#f4f4f2;color:var(--ink-12);display:grid;place-items:start center;padding-top:8px;margin-bottom:18px}.preset-detail dl div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:10px 0;font-size:11px}.preset-detail dt{color:var(--ink-10)}.preset-detail button{width:100%;margin-top:16px}.settings-pane{display:grid;grid-template-columns:1.1fr 1.2fr .9fr}.settings-pane h1{font-size:20px;margin:0 0 30px}.settings-pane h2{color:var(--ink-4)}.setting-line{min-height:54px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--control-3);color:var(--ink-5);font-size:13px}.settings-card{width:100%;display:flex;justify-content:space-between;border:0;border-bottom:1px solid var(--line);background:var(--control);color:var(--ink-4);padding:14px;border-radius:6px;margin-bottom:7px}.shortcut-row{display:flex;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line);color:var(--ink-6);font-size:12px}
@@ -63,8 +76,8 @@
 
 .single-canvas,.compare-split{display:grid;place-items:center;gap:14px;width:100%;height:100%;min-height:0}
 .compare-split{grid-template-columns:1fr 1fr}
-.editor-stage .canvas{height:min(100%,356px);max-width:100%;transform-origin:center}
-.compare-split .canvas,.compare-split .canvas-scene{height:min(100%,330px)}
+
+
 .editor-stage .compare-labels{position:absolute;top:4px;left:0;right:0;margin:0;z-index:2}
 .original-object{position:absolute;inset:14%;display:flex;align-items:center;justify-content:center}
 .original-object .product-large{width:100%;height:100%}
@@ -366,24 +379,6 @@ body { background: var(--app); }
 .settings-intro h1 { margin: 0; font-size: 20px; color: var(--ink) }
 .settings-intro p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--ink-10) }
 .settings-intro strong { color: var(--ink-6) }
-.theme-picker { border: 0; margin: 0; padding: 0; display: grid; gap: 7px }
-.theme-picker legend { padding: 0 0 9px; font-size: 11px; letter-spacing: .07em; color: var(--ink-11) }
-.theme-picker label {
-  display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 12px;
-  border: 1px solid var(--line-3); border-radius: 10px; padding: 12px 13px;
-  cursor: pointer; transition: border-color .18s ease, background .18s ease;
-}
-.theme-picker label:hover { border-color: var(--line-7); background: var(--tile-4) }
-.theme-picker label.active { border-color: var(--ink-8); background: var(--tile-5) }
-.theme-picker input { position: absolute; opacity: 0; pointer-events: none }
-.theme-picker label:focus-within { outline: 2px solid var(--ring); outline-offset: 2px }
-.theme-swatch { width: 34px; height: 26px; border-radius: 6px; border: 1px solid var(--line-6) }
-.theme-swatch-light { background: linear-gradient(135deg, #ffffff 50%, #e4e7ea 50%) }
-.theme-swatch-dark { background: linear-gradient(135deg, #2b2b2b 50%, #151515 50%) }
-.theme-swatch-system { background: linear-gradient(135deg, #ffffff 50%, #1c1c1c 50%) }
-.theme-copy { display: grid; gap: 2px }
-.theme-copy strong { font-size: 13px; color: var(--ink-3) }
-.theme-copy em { font-style: normal; font-size: 11px; color: var(--ink-11) }
 
 /* ------------------------------------------------------------ presets pane - */
 .presets-pane { grid-template-columns: 240px minmax(280px, 1fr) 300px }
@@ -392,17 +387,17 @@ body { background: var(--app); }
 
 /* Light mode needs real edges on tonally-filled controls, which read as
    disabled text without them. */
-:root[data-theme="light"] .filter-tabs,
-:root[data-theme="light"] .segmented,
-:root[data-theme="light"] .view-switch { border: 1px solid var(--line-2) }
-:root[data-theme="light"] .alignment-grid button,
-:root[data-theme="light"] .flip-row button,
-:root[data-theme="light"] .grid-toggle { background: var(--tile-4); border-color: var(--line-6); color: var(--ink-8) }
-:root[data-theme="light"] .settings-card, :root[data-theme="light"] kbd { border: 1px solid var(--line-2) }
-:root[data-theme="light"] .log-link { color: #1d64b5 }
-:root[data-theme="light"] .error-log { background: #fdeeee; border-color: #e0b4b4; color: #8a2b2b }
-:root[data-theme="light"] button:focus-visible,
-:root[data-theme="light"] input:focus-visible { outline-color: var(--ink-4) }
+.filter-tabs,
+.segmented,
+.view-switch { border: 1px solid var(--line-2) }
+.alignment-grid button,
+.flip-row button,
+.grid-toggle { background: var(--tile-4); border-color: var(--line-6); color: var(--ink-8) }
+.settings-card, kbd { border: 1px solid var(--line-2) }
+.log-link { color: #1d64b5 }
+.error-log { background: #fdeeee; border-color: #e0b4b4; color: #8a2b2b }
+button:focus-visible,
+input:focus-visible { outline-color: var(--ink-4) }
 
 /* Focus mode fills the viewport rather than the window. */
 .focus-workspace { width: 100vw; height: 100dvh; background: var(--pane) }
@@ -462,8 +457,6 @@ body { background: var(--app); }
 .editor-stage { position: relative; display: flex; align-items: center; justify-content: center; min-height: 0 }
 .single-canvas { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 0; gap: 0 }
 .compare-split { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; min-height: 0; gap: 16px }
-.editor-stage .canvas, .editor-stage .canvas-scene { height: 100%; width: auto; max-width: 100%; flex: 0 0 auto }
-.split-before .canvas, .split-after .canvas, .split-before .canvas-scene, .split-after .canvas-scene { height: 100% }
 
 /* Rulers: a measuring edge, not a hatch. Minor ticks every 10px, major every 50. */
 .ruler {
@@ -839,7 +832,7 @@ body { background: var(--app); }
 
 /* A violet selection reads as "chosen" against the light artboard in either
    theme, and matches the design system's primary. */
-.frame { --frame-line: #374151 }
+.frame { --frame-line: #E35205 }
 .frame:not(.frame-editing) { overflow:visible }
 .frame:not(.frame-editing) .image-layer { outline:1.5px solid #7c3aed; outline-offset:0 }
 .frame-outline {
@@ -936,7 +929,7 @@ body { background: var(--app); }
 .focus-gallery-strip{display:flex;align-items:center;gap:14px;min-height:0;overflow-x:auto;padding:8px 2px 20px}.focus-gallery-strip button{width:180px;min-width:180px;height:250px;display:grid;grid-template-rows:1fr auto;gap:8px;padding:8px;border:1px solid var(--line-5);border-radius:9px;background:var(--tile-5);color:var(--ink-7);text-align:left;transition:border-color .16s ease,transform .16s ease}.focus-gallery-strip button:hover,.focus-gallery-strip button:focus-visible,.focus-gallery-strip button.active{border-color:var(--accent);color:var(--ink-2);transform:translateY(-2px);outline:none}.focus-gallery-strip .asset-image{width:100%;height:100%;min-height:0;object-fit:cover;border-radius:5px}.focus-gallery-strip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px}
 .focus-editor-host{flex:1;min-height:0;width:100%;display:flex;overflow:hidden}.focus-editor-host .focus-editor-pane{width:100%;height:100%;min-height:0;grid-template-rows:minmax(0,1fr);overflow:hidden;background:var(--pane)}
 .focus-editor-host .editor-stage{height:100%;min-height:0;padding:18px 28px 28px;background:var(--pane)}.focus-editor-host .editor-stage .single-canvas{max-height:calc(100dvh - 120px)}
-.focus-editor-host .editor-stage .canvas,.focus-editor-host .editor-stage .canvas-scene{max-height:calc(100dvh - 150px)}
+
 .editor-drop-overlay{position:absolute;inset:12%;z-index:20;display:grid;place-content:center;justify-items:center;gap:8px;border:2px dashed var(--accent);border-radius:12px;background:#171717d9;color:var(--ink-2);pointer-events:none;text-align:center}.editor-drop-overlay svg{width:28px;height:28px}.editor-drop-overlay span{font-size:11px;color:var(--ink-6)}
 @media (max-width:760px){.focus-toolbar{gap:5px;padding:7px 8px}.focus-contextual-toolbar{order:3;max-width:100%;width:100%}.focus-toolbar .focus-title{font-size:11px}.focus-toolbar .focus-title span{display:none}.focus-editor-host .editor-stage{padding:12px 8px 22px}}
 
@@ -1000,3 +993,352 @@ body { background: var(--app); }
   display:flex; gap:6px; padding:6px; border-radius:10px; pointer-events:auto;
   background:var(--popover); border:1px solid var(--border); box-shadow:0 8px 24px rgba(0,0,0,.18);
 }
+
+/* ==================================================================== P2
+   Workspace, viewport and screen-space chrome.
+
+   The page stops being the clipping root. It becomes an artboard inside a
+   larger workspace: artwork outside it stays visible and selectable, and a
+   scrim says what will not be exported. Pan and zoom live on one viewport
+   matrix, so nothing below has to know about them except through --z. */
+
+:root {
+  --workspace: #DFE3E8;
+  --page-shadow: 0 2px 10px rgba(15, 23, 42, .14), 0 0 0 1px rgba(15, 23, 42, .06);
+  --scrim: rgba(223, 227, 232, .68);
+  --crop-scrim: rgba(9, 12, 20, .55);
+}
+
+.viewport {
+  position: absolute; inset: 0; overflow: hidden; z-index: 0;
+  background: var(--workspace); touch-action: none; outline: none;
+}
+.viewport:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px }
+.viewport.panning { cursor: grab }
+.viewport.panning:active { cursor: grabbing }
+
+/* The scene is the page's own coordinate space, placed by the viewport
+   matrix. Its pre-transform pixel is one output pixel. */
+/*
+ * Nothing may size `.canvas-scene`.
+ *
+ * Its width and height are set inline to the page's own pixel dimensions, and
+ * every gesture measures it with `getBoundingClientRect()` to turn a pointer
+ * into a page coordinate. A stylesheet that resizes it does not just look
+ * wrong: it moves the origin every drag, resize and ruler tick is measured
+ * from.
+ *
+ * Four rules left over from before the workspace existed - when the page *was*
+ * the element that filled the stage - still did. Inline width and height beat
+ * them, so three were invisible; the fourth set `max-height`, which is not set
+ * inline, under a three-class selector that outranked this one. That was focus
+ * mode: the scene was clamped, and the rulers and the fit were computed
+ * against a box that was not the size it claimed to be.
+ *
+ * The constraints below are reset here as well, so a two-class rule reappearing
+ * cannot do it again.
+ */
+.viewport > .canvas-scene {
+  position: absolute; top: 0; left: 0; flex: none;
+  max-width: none; max-height: none; min-width: 0; min-height: 0;
+  will-change: transform; overflow: visible;
+}
+/* Artwork is no longer cut at the page edge; the scrim carries that meaning. */
+.page-canvas { overflow: visible; box-shadow: none }
+.page-render-clip { overflow: visible }
+/* The page's own shadow is drawn in screen space so it never scales with zoom. */
+.workspace-page-shadow { position: absolute; pointer-events: none; box-shadow: var(--page-shadow) }
+/* One element dims everything outside the page. The spread is in scene units,
+   large enough to cover the workspace at any zoom. */
+.workspace-scrim {
+  position: absolute; inset: 0; z-index: 1; pointer-events: none;
+  box-shadow: 0 0 0 100000px var(--scrim);
+}
+
+/* --------------------------------------------- chrome at constant screen size
+
+   The overlay shares the scene's transform so it can keep using the page's
+   own percentages, and every piece of chrome divides that scale back out
+   through --zi. Handles therefore measure the same at 10% and at 400%. */
+
+.selection-overlay { z-index: 2 }
+.frame-handle, .rotation-handle {
+  width: 10px; height: 10px; margin: 0;
+  transform: translate(-50%, -50%) scale(var(--zi, 1));
+  transform-origin: 50% 50%;
+}
+.handle-nw { left: 0; top: 0; right: auto; bottom: auto }
+.handle-n  { left: 50%; top: 0; right: auto; bottom: auto }
+.handle-ne { left: 100%; top: 0; right: auto; bottom: auto }
+.handle-e  { left: 100%; top: 50%; right: auto; bottom: auto }
+.handle-se { left: 100%; top: 100%; right: auto; bottom: auto }
+.handle-s  { left: 50%; top: 100%; right: auto; bottom: auto }
+.handle-sw { left: 0; top: 100%; right: auto; bottom: auto }
+.handle-w  { left: 0; top: 50%; right: auto; bottom: auto }
+.handle-n, .handle-s { width: 22px; height: 8px }
+.handle-e, .handle-w { width: 8px; height: 22px }
+/* WCAG 2.2 asks for 24 CSS px of pointer target; the visible handle stays
+   small so it does not bury the artwork underneath it. */
+.frame-handle::after, .rotation-handle::after {
+  content: ""; position: absolute; left: 50%; top: 50%;
+  width: 24px; height: 24px; transform: translate(-50%, -50%);
+}
+.rotation-handle {
+  left: 50%; top: 0; width: 12px; height: 12px;
+  transform: translate(-50%, -50%) scale(var(--zi, 1)) translate(0, -28px);
+}
+.rotation-handle::before { bottom: auto; top: 12px; height: 16px }
+.frame-handle:focus-visible, .rotation-handle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px }
+.frame-outline { border-width: calc(1.5px * var(--zi, 1)) }
+.image-layer.image-editing { outline-width: calc(1px * var(--zi, 1)) }
+.layer-hit:hover, .layer-hit:focus-visible, .layer-hit.frame-hit.empty { outline-width: calc(1.5px * var(--zi, 1)) }
+.layer-label {
+  left: 0; top: 0; transform-origin: 0 100%;
+  transform: scale(var(--zi, 1)) translateY(-100%);
+}
+@media (pointer: coarse) {
+  /* Fingers get the larger target the workspace override asks for. */
+  .frame-handle::after, .rotation-handle::after { width: 44px; height: 44px }
+}
+
+/* Context bar: screen-anchored, so panning cannot carry it off the pane, and
+   it lifts clear of a selection sitting at the bottom edge. */
+.frame-actions { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 4 }
+.frame-actions.raised { bottom: auto; top: 16px }
+.frame-actions > [role="group"] { display: flex; gap: 6px; align-items: center }
+
+/* ------------------------------------------------------------- comparison */
+
+.compare-layer {
+  position: absolute; z-index: 3; pointer-events: none; overflow: hidden;
+  background: #f5f5f3;
+}
+.compare-layer .asset-image { width: 100%; height: 100% }
+.compare-divider { position: absolute; z-index: 4; pointer-events: none }
+.compare-divider .compare-labels {
+  position: absolute; top: 6px; left: 0; right: 0; margin: 0;
+  display: flex; justify-content: space-between; padding: 0 10px; font-size: 10px;
+}
+.compare-divider .split-handle {
+  position: absolute; top: 0; bottom: 0; left: var(--split); width: 2px;
+  margin-left: -1px; background: var(--frame-line); pointer-events: auto; cursor: ew-resize;
+}
+.compare-divider .split-handle span {
+  position: absolute; top: 50%; left: 50%; width: 24px; height: 24px; margin: -12px 0 0 -12px;
+  border-radius: 50%; background: var(--frame-line); box-shadow: 0 1px 4px rgba(0, 0, 0, .35);
+}
+.compare-divider .split-handle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px }
+
+/* No transition on the scene: pan and zoom are direct manipulation and any
+   easing reads as lag. Animating Fit and Zoom-to-selection needs a transient
+   class that only those two actions set, which lands with the zoom controls
+   in P6 — and it will sit behind prefers-reduced-motion when it does. */
+
+/* Snap guides (§16). A guide is the visible half of a solved constraint, so it
+   gets its own interaction colour — never the selection accent, which would
+   read as "this is selected" rather than "this is what you lined up with".
+   Lines are counter-scaled like every other piece of chrome in the scene, so
+   they stay hairline-thin at 400% and still visible at 5%. */
+:root { --snap: #e6005c; --snap-soft: #e6005c8c }
+.snap-guides { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: visible }
+.snap-guide { position: absolute; background: var(--snap) }
+.snap-guide.axis-x { width: calc(1.5px * var(--zi, 1)); margin-left: calc(-0.75px * var(--zi, 1)) }
+.snap-guide.axis-y { height: calc(1.5px * var(--zi, 1)); margin-top: calc(-0.75px * var(--zi, 1)) }
+/* The grid attracts everywhere, so its guide has to be quieter than an
+   alignment a person deliberately aimed for. */
+.snap-guide.grid { background: var(--snap-soft) }
+@media (prefers-reduced-motion: no-preference) { .snap-guide { animation: snap-in .09s ease-out } }
+@keyframes snap-in { from { opacity: .35 } to { opacity: 1 } }
+
+/* Transform panel (§7). Position, size and rotation of whatever is selected,
+   shown in output pixels. It sits at the top of the inspector because it is
+   the only block that describes the selection rather than the whole batch. */
+.transform-panel { display: flex; flex-direction: column; gap: 7px; padding-bottom: 11px; border-bottom: 1px solid var(--line) }
+.transform-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 0 }
+.transform-heading strong { color: var(--ink-3); font-size: 11px; font-weight: 500;
+  max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.transform-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px }
+/* The label column sizes to its text: "Angle" is wider than "X", and a fixed
+   column made the two overlap. */
+.transform-field { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center;
+  gap: 5px; background: var(--control-2); border: 1px solid var(--line-6); border-radius: 6px; padding: 0 7px }
+.transform-field:focus-within { border-color: var(--accent) }
+.transform-field > span { color: var(--ink-10); font-size: 11px }
+.transform-field > em { color: var(--ink-12); font-size: 10px; font-style: normal }
+.transform-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent;
+  color: var(--ink); font-size: 12px; padding: 8px 0 }
+/* The spinners steal width this panel does not have, and the field is already
+   arrow-key steppable without them. */
+.transform-field input::-webkit-outer-spin-button,
+.transform-field input::-webkit-inner-spin-button { appearance: none; margin: 0 }
+.transform-field input[type="number"] { -moz-appearance: textfield; appearance: textfield }
+.transform-toggles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px }
+.transform-toggles button { display: grid; place-items: center; min-height: 32px;
+  border: 1px solid var(--line-6); border-radius: 6px; color: var(--ink-8); background: var(--tile-6) }
+.transform-toggles button svg { width: 15px; height: 15px }
+.transform-toggles button[aria-pressed="true"] { background: var(--fill-strong); color: var(--on-strong) }
+
+/* --------------------------------------------------------- selection colour
+
+   Selection chrome is orange, the way Canva outlines an image frame, a
+   background, and the page itself. The old slate grey was high-contrast on
+   paper but read as part of the artwork on screen, and two of these lines were
+   never counter-scaled: a 1.5px border in scene units is half a screen pixel
+   at the 32% zoom the editor opens at, which is why drawing a frame looked
+   like nothing happened at all. Every line now carries a white halo so it
+   survives on a dark photograph as well as on the white page. */
+:root { --frame-line: #E35205; --frame-halo: rgba(255, 255, 255, .92) }
+.frame-draft {
+  border-width: calc(1.5px * var(--zi, 1));
+  background: color-mix(in srgb, var(--frame-line) 14%, transparent);
+  box-shadow: 0 0 0 calc(1px * var(--zi, 1)) var(--frame-halo);
+}
+.frame-placeholder { border-width: calc(1.5px * var(--zi, 1)) }
+.frame-selection .frame-outline { box-shadow: 0 0 0 calc(1px * var(--zi, 1)) var(--frame-halo) }
+.image-layer.image-editing { outline-color: color-mix(in srgb, var(--frame-line) 75%, transparent) }
+/* The crop window stays violet on purpose: crop mode must not look like an
+   ordinary selection (§15). */
+.crop-window { outline-width: calc(1.5px * var(--zi, 1)) }
+/* The page's own boundary, quiet enough to live under a selection but present
+   at every zoom, so the white artboard has an edge even against a white photo. */
+.page-canvas { outline: calc(1px * var(--zi, 1)) solid color-mix(in srgb, var(--frame-line) 40%, transparent) }
+
+/* ------------------------------------------------- scene and chrome, apart
+
+   The selection overlay draws chrome only.  It used to carry a second copy of
+   the selected image so it could sit above the scrim and outside the page;
+   the scene layer does that on its own now, and the overlay's image box is an
+   invisible host for the handles and the drag target. */
+.selection-overlay .image-layer { background: transparent }
+/* The checkerboard that makes a white-on-white image findable belongs behind
+   the picture, so it moved to the scene layer with it. */
+.page-render-image.needs-locator::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background-image:
+    linear-gradient(45deg, rgba(0, 0, 0, .09) 25%, transparent 25%, transparent 75%, rgba(0, 0, 0, .09) 75%),
+    linear-gradient(45deg, rgba(0, 0, 0, .09) 25%, transparent 25%, transparent 75%, rgba(0, 0, 0, .09) 75%);
+  background-size: 16px 16px; background-position: 0 0, 8px 8px; background-color: #fff;
+}
+/* A label is text. It follows the object's position but never its orientation,
+   or a mirrored image is labelled in mirror writing. */
+.layer-label {
+  transform: scale(var(--fx, 1), var(--fy, 1)) rotate(calc(var(--r, 0) * -1deg))
+             scale(var(--zi, 1)) translateY(-100%);
+}
+/* Crop mode dims what the crop throws away (§15), which is what stops it
+   reading as an ordinary selection. */
+.crop-shade {
+  position: absolute; inset: 0; pointer-events: none;
+  background: var(--crop-scrim);
+}
+
+/* ---------------------------------------------------------------- rulers
+
+   Pane-space chrome: the strips sit on the viewport's own edges and are not
+   touched by the scene transform, so their text stays upright and their
+   thickness stays constant at every zoom.  They overlay the workspace rather
+   than shrinking it - reserving 22px would reflow the canvas every time the
+   toggle moved, and that reflow costs more than the strip does. */
+/* `top` is set inline: the band clears whichever toolbar overlays this view. */
+.rulers { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; pointer-events: none; overflow: hidden }
+.ruler { position: absolute; background: color-mix(in srgb, var(--chrome) 92%, transparent); color: var(--ink-11); font-size: 9px }
+.ruler-h { left: 0; right: 0; top: 0; height: 18px; border-bottom: 1px solid var(--line-2) }
+.ruler-v { left: 0; top: 0; bottom: 0; width: 18px; border-right: 1px solid var(--line-2) }
+.ruler .tick { position: absolute; white-space: nowrap }
+.ruler-h .tick { top: 3px; padding-left: 3px; border-left: 1px solid var(--line-5); height: 15px; line-height: 1 }
+/* The vertical ruler's numbers are turned, not stacked: stacked digits are
+   unreadable and a quarter turn is what every drawing program does. */
+.ruler-v .tick {
+  left: 3px; border-top: 1px solid var(--line-5); width: 15px; padding-top: 2px;
+  writing-mode: vertical-rl; text-orientation: mixed;
+}
+/* Outside the page is still measured, but reads as secondary. */
+.ruler .tick.outside { color: var(--ink-12); opacity: .7 }
+.ruler-corner {
+  position: absolute; left: 0; top: 0; width: 18px; height: 18px;
+  background: var(--chrome); border-right: 1px solid var(--line-2); border-bottom: 1px solid var(--line-2);
+}
+
+/* ------------------------------------------------------- multi-selection
+
+   One rectangle over several objects that keep their own identity (§18).
+   It is drawn in the accent orange like any other selection, but dashed, so a
+   group never reads as a single object that could be cropped or replaced. */
+.multi-selection {
+  position: absolute; z-index: 3; pointer-events: auto; touch-action: none;
+  cursor: grab; transform-origin: center;
+}
+.multi-selection:active { cursor: grabbing }
+.multi-selection .frame-outline {
+  border-style: dashed;
+  box-shadow: 0 0 0 calc(1px * var(--zi, 1)) var(--frame-halo);
+}
+/* A marquee is a transient sweep, not a selection: it borrows the guide colour
+   rather than the selection colour, and says which rule it is applying -
+   solid for "everything wholly inside", dashed for "everything crossed". */
+.marquee {
+  position: absolute; z-index: 4; pointer-events: none;
+  border: calc(1px * var(--zi, 1)) solid var(--snap);
+  background: color-mix(in srgb, var(--snap) 12%, transparent);
+}
+.marquee.touch { border-style: dashed }
+.selection-count { font-size: 11px; color: var(--ink-8); padding: 0 4px; white-space: nowrap }
+
+/* ---------------------------------------------------------- layers panel
+
+   The scene graph as a list (§23), topmost first. It is capped and scrolls:
+   a canvas with twenty objects must not push the preset and the apply button
+   off the bottom of the inspector. */
+.layers-panel { display: flex; flex-direction: column; gap: 5px; padding-bottom: 11px; border-bottom: 1px solid var(--line) }
+.layers-heading { display: flex; align-items: baseline; justify-content: space-between; margin-top: 0 }
+.layers-heading strong { color: var(--ink-3); font-size: 11px; font-weight: 500 }
+.layers-empty { margin: 0; font-size: 11px; color: var(--ink-11) }
+.layers-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px;
+  max-height: 208px; overflow-y: auto }
+.layers-list > li { position: relative }
+.layer-row {
+  width: 100%; display: grid; grid-template-columns: 12px 26px minmax(0, 1fr) auto; align-items: center; gap: 6px;
+  border: 1px solid transparent; border-radius: 6px; padding: 4px 6px; background: transparent;
+  color: var(--ink-6); font-size: 11px; text-align: left; touch-action: none;
+}
+.layer-row:hover { background: var(--tile-5) }
+.layer-row.active { border-color: var(--frame-line); background: color-mix(in srgb, var(--frame-line) 10%, transparent); color: var(--ink-3) }
+.layer-row.lifted { opacity: .55 }
+.layer-grip { width: 12px; height: 12px; color: var(--ink-12) }
+.layer-thumb { width: 26px; height: 26px; border-radius: 4px; overflow: hidden; background: var(--tile-6);
+  display: grid; place-items: center; color: var(--ink-10) }
+.layer-thumb img { width: 100%; height: 100%; object-fit: cover }
+.layer-thumb svg { width: 13px; height: 13px }
+.layer-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.layer-kind { color: var(--ink-12); font-size: 10px; white-space: nowrap }
+/* The drop indicator (§24): a line in the gap the layer will fall into, not a
+   highlight on a row - "between these two" is the thing being chosen. */
+.layers-list > li.drop-above::before, .layers-list > li.drop-below::after {
+  content: ""; position: absolute; left: 0; right: 0; height: 2px;
+  background: var(--frame-line); border-radius: 2px;
+}
+.layers-list > li.drop-above::before { top: -3px }
+.layers-list > li.drop-below::after { bottom: -3px }
+
+/* The page's own image sits at the base of the stack and cannot be dragged:
+   the exporter draws it underneath every layer and has nowhere else to put
+   it, so a row that invited dragging would promise an order the file has no
+   way to keep. */
+.layer-row.pinned { cursor: default }
+.layer-row.pinned .layer-name { color: var(--ink-8) }
+
+/* ------------------------------------------------------------ settling in
+
+   Colour and border settle over a beat instead of snapping. Only controls get
+   this: nothing that tracks the pointer may be transitioned, because a handle
+   or an outline that eases into place is a handle that lags behind the thing
+   it is supposed to be attached to. */
+.layer-row, .toolbar-segment button, .transform-toggles button,
+.alignment-grid button, .segmented button, .scope-list button {
+  transition: background-color .14s ease, border-color .14s ease, color .14s ease;
+}
+/* A handle answers the pointer by taking the selection colour on its rim. Its
+   size is left alone: it is counter-scaled against zoom, and growing it on
+   hover would fight that arithmetic for no gain the 24px hit target does not
+   already give. */
+.frame-handle:hover, .rotation-handle:hover { border-color: var(--frame-line) }

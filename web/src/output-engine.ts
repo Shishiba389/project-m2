@@ -81,8 +81,12 @@ export async function encodeOutput(canvas: HTMLCanvasElement | OffscreenCanvas, 
   let bytes: Uint8Array;
   if (byteLimit === undefined || options.format === "png") {
     bytes = await encode(options.quality);
-    if (byteLimit !== undefined && bytes.length > byteLimit)
-      throw new Error(`FILE_SIZE_LIMIT_UNREACHABLE: lossless PNG is ${bytes.length} bytes`);
+    if (byteLimit !== undefined && bytes.length > byteLimit) {
+      // Reachable only from a saved workflow written before the dialog stopped
+      // offering the pair. Say which of the two settings has to give.
+      throw new Error(`FILE_SIZE_LIMIT_UNREACHABLE: PNG is lossless, so ${bytes.length} bytes cannot be reduced to `
+        + `${options.maxBytes}. Export as JPG or WebP, or clear the size limit.`);
+    }
   } else {
     bytes = await encode(options.quality);
     if (bytes.length > byteLimit) {
@@ -93,7 +97,10 @@ export async function encodeOutput(canvas: HTMLCanvasElement | OffscreenCanvas, 
         if (candidate.length <= byteLimit) { best = candidate; low = quality + 1; }
         else high = quality - 1;
       }
-      if (!best) throw new Error(`FILE_SIZE_LIMIT_UNREACHABLE: cannot fit within ${options.maxBytes} bytes`);
+      if (!best) {
+        throw new Error(`FILE_SIZE_LIMIT_UNREACHABLE: even at the lowest quality this is larger than `
+          + `${options.maxBytes} bytes. Raise the limit or export at smaller dimensions.`);
+      }
       bytes = best;
     }
   }

@@ -13,49 +13,8 @@ export const moveImage = (image: ImageElement, dx: number, dy: number): ImageEle
 export const nudgeImage = (image: ImageElement, direction: "left" | "right" | "up" | "down", amount = 1): ImageElement =>
   moveImage(image, direction === "left" ? -amount : direction === "right" ? amount : 0, direction === "up" ? -amount : direction === "down" ? amount : 0);
 
-const MIN_SIZE = 1;
-const clampSize = (value: number) => Math.max(MIN_SIZE, value);
-
-/** Pointer movement in page axes transformed into the element's local axes. */
-export function localResizeDelta(image: ImageElement, dx: number, dy: number): { dx: number; dy: number } {
-  const radians = -image.box.rotation * Math.PI / 180;
-  return { dx: dx * Math.cos(radians) - dy * Math.sin(radians), dy: dx * Math.sin(radians) + dy * Math.cos(radians) };
-}
-
-/** Resize from one of the eight selection handles, keeping the opposite edge anchored. */
-export function resizeImage(image: ImageElement, handle: ResizeHandle, dx: number, dy: number, stretch = false): ImageElement {
-  const original = image.box;
-  const west = handle.includes("w"); const east = handle.includes("e");
-  const north = handle.includes("n"); const south = handle.includes("s");
-  const right = original.x + original.w; const bottom = original.y + original.h;
-  let w = original.w + (east ? dx : west ? -dx : 0);
-  let h = original.h + (south ? dy : north ? -dy : 0);
-
-  if (original.lockedRatio && !stretch) {
-    const hasHorizontal = west || east;
-    const hasVertical = north || south;
-    const scaleX = hasHorizontal ? w / original.w : 1;
-    const scaleY = hasVertical ? h / original.h : 1;
-    // Corners use the movement that changed scale the most; an edge uses its
-    // own axis and expands the other axis symmetrically around its centre.
-    const scale = hasHorizontal && hasVertical
-      ? (Math.abs(scaleX - 1) >= Math.abs(scaleY - 1) ? scaleX : scaleY)
-      : hasHorizontal ? scaleX : scaleY;
-    w = clampSize(original.w * scale);
-    h = clampSize(original.h * scale);
-  } else {
-    w = clampSize(w); h = clampSize(h);
-  }
-
-  let x = original.x; let y = original.y;
-  if (west) x = right - w;
-  else if (!east && w !== original.w) x = original.x - (w - original.w) / 2;
-  if (north) y = bottom - h;
-  else if (!south && h !== original.h) y = original.y - (h - original.h) / 2;
-  return { ...image, box: { ...original, x, y, w, h } };
-}
-
-export const rotateImage = (image: ImageElement, rotation: number): ImageElement => ({ ...image, box: { ...image.box, rotation: ((rotation % 360) + 360) % 360 } });
+/* Resizing, rotating and the local-axis conversion moved to gestures.ts,
+   which computes them from the gesture's own starting matrix. */
 export const resetCrop = (image: ImageElement): ImageElement => ({ ...image, crop: null });
 const MIN_CROP_SPAN = 0.05;
 export const cropImage = (image: ImageElement, crop: CropRect): ImageElement => {
@@ -78,4 +37,31 @@ export function resizeCrop(crop: CropRect, handle: ResizeHandle, dx: number, dy:
   if (handle.includes("n")) top += dy;
   if (handle.includes("s")) bottom += dy;
   return cropImage({ ...fullPageImage(), crop: null }, { left, top, right, bottom }).crop!;
+}
+
+/* --------------------------------------------------------------- cursors */
+
+/**
+ * Which way each handle points in the element's own frame, in degrees
+ * clockwise from east. Screen y grows downward, so `se` is +45.
+ */
+const HANDLE_ANGLE: Record<ResizeHandle, number> = { e: 0, se: 45, s: 90, sw: 135, w: 180, nw: 225, n: 270, ne: 315 };
+export type ResizeCursor = "ew-resize" | "nwse-resize" | "ns-resize" | "nesw-resize";
+const CURSORS: ResizeCursor[] = ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"];
+
+/**
+ * The cursor a handle should show once its element is transformed.
+ *
+ * A static `nwse-resize` on the `se` handle is a lie the moment the element
+ * turns: at 90° that handle drags the object south-west. The element is drawn
+ * `rotate(r) scale(flip)`, so the handle direction goes through the mirror
+ * first and the rotation second, in that order. Only the line matters, not
+ * which end of it, so the result folds into a half turn.
+ */
+export function handleCursor(handle: ResizeHandle, box: { rotation: number; flipH: boolean; flipV: boolean }): ResizeCursor {
+  let angle = HANDLE_ANGLE[handle];
+  if (box.flipH) angle = 180 - angle;
+  if (box.flipV) angle = -angle;
+  angle += box.rotation;
+  return CURSORS[Math.round((((angle % 180) + 180) % 180) / 45) % 4];
 }
