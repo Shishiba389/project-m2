@@ -233,19 +233,28 @@ export function MinimaWorkspace() {
    * in instances, because an image placed three times is three files (§22).
    * The two counts differ only when something has been placed more than once.
    *
-   * This is a function and not a memo on purpose. Building it costs one layer
-   * list per file - each one hides a different copy - and as a memo over the
-   * document that ran on every pointer move of every drag, which is exactly
-   * the work that made dragging stutter.
+   * The document and the asset list are arguments rather than refs read from
+   * inside. One caller runs while the component is rendering and the other
+   * runs from an event afterwards; a ref is only safe for the second, and the
+   * first version of this read `docRef` from a render that happens hundreds of
+   * lines before `docRef` exists. TypeScript cannot see that - the read is
+   * inside a callback, so it has no way to know when the call happens - and
+   * the temporal dead zone threw during render, which unmounts the tree and
+   * leaves nothing but the dialog's own grey backdrop behind.
    */
-  const exportRunFor = useCallback((): ExportUnit[] => {
-    const units = exportUnits(docRef.current, assetsRef.current);
+  const unitsFor = useCallback((source: Doc, list: Asset[]): ExportUnit[] => {
+    const units = exportUnits(source, list);
     return exportOptions.selectedIds === null
       ? units : units.filter((unit) => exportOptions.selectedIds!.includes(unit.asset.id));
   }, [exportOptions.selectedIds]);
-  /** Only while the dialog is open, where the count is actually read. */
+  /**
+   * Only while the dialog is open, where the count is actually read. Building
+   * it costs one layer list per file - each hides a different copy - and as a
+   * memo over the whole document it once ran on every pointer move of every
+   * drag, which is what made dragging stutter.
+   */
   const exportFileCount = useMemo(
-    () => exportOpen ? exportRunFor().length : 0, [exportOpen, exportRunFor, doc, assets]);
+    () => exportOpen ? unitsFor(doc, assets).length : 0, [exportOpen, unitsFor, doc, assets]);
   const visible = useMemo(() => filterAssets(assets, target, filter), [assets, target, filter]);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
   const scoped = useMemo(() => scope === "all" ? assets : scope === "selected" ? assets.filter((asset) => selectedSet.has(asset.id)) : assets.filter((asset) => asset.id === activeId), [assets, scope, selectedSet, activeId]);
@@ -1056,7 +1065,7 @@ export function MinimaWorkspace() {
    * only honest output.
    */
   const startExport = useCallback(async () => {
-    const run = exportRunFor();
+    const run = unitsFor(docRef.current, assetsRef.current);
     if (!run.length) return;
     cancelExport.current = false;
     setExportOpen(false);
@@ -1071,7 +1080,7 @@ export function MinimaWorkspace() {
     setRunDone(true);
     if (result.progress.done > result.progress.failed.length) downloadZip(result.zip, EXPORT_ZIP);
     touch(`Exported ${result.progress.done - result.progress.failed.length} image(s)`);
-  }, [assets, doc, exportOptions, exportRunFor, touch]);
+  }, [assets, doc, exportOptions, touch, unitsFor]);
 
   useEffect(() => {
     if (!assets.length && !["batch", "editor", "presets", "settings"].includes(screen)) goto("import");
