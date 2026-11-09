@@ -1,5 +1,8 @@
 import { begin } from "@/src/selfcheck";
-import { buildAreaAxisMap, buildBicubicAxisMap, cubicKernel, estimatePeakBytes, resizeRgba, srgbToLinear, validateDimensions } from "@/src/resize-core";
+import {
+  buildAreaAxisMap, buildBicubicAxisMap, cubicKernel, estimatePeakBytes, resizeRgba, SRGB_TO_DISPLAY_P3, srgbToDisplayP3,
+  srgbToLinear, transformRgba, validateDimensions,
+} from "@/src/resize-core";
 import { writeJpegDpi, writePngDpi } from "@/src/output-engine";
 
 const finish = begin();
@@ -104,5 +107,45 @@ console.assert(pngDpi.length === 54 && String.fromCharCode(...pngDpi.slice(37, 4
 const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 const jpegDpi = writeJpegDpi(jpeg, 300, 300);
 console.assert(jpegDpi[2] === 0xff && jpegDpi[3] === 0xe0 && jpegDpi[13] === 1, "JPEG JFIF density is inserted");
+
+// Turning and mirroring: what a canvas used to do, in linear light.
+const tile = noise(6, 4);
+const pixelAt = (image: { width: number; data: Uint8ClampedArray }, x: number, y: number) => [...image.data.slice((y * image.width + x) * 4, (y * image.width + x) * 4 + 4)].join();
+const unturned = transformRgba(tile, 3, 2, { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 }, { x: 0, y: 0, width: 12, height: 8 });
+console.assert(pixelAt(unturned, 3, 2) === pixelAt(tile, 0, 0) && pixelAt(unturned, 8, 5) === pixelAt(tile, 5, 3) && pixelAt(unturned, 2, 2) === "0,0,0,0",
+  "untransformed, a picture is copied to its place byte for byte");
+// A quarter turn about the origin: page (x, y) holds picture (y, -x - 1).
+const quarter = transformRgba(tile, 0, 0, { a: 0, b: 1, c: -1, d: 0, tx: 0, ty: 0 }, { x: -4, y: 0, width: 4, height: 6 });
+console.assert(pixelAt(quarter, 3, 0) === pixelAt(tile, 0, 0) && pixelAt(quarter, 0, 5) === pixelAt(tile, 5, 3),
+  "a quarter turn moves whole pixels and filters none");
+const mirrored = transformRgba(tile, 0, 0, { a: -1, b: 0, c: 0, d: 1, tx: 6, ty: 0 }, { x: 0, y: 0, width: 6, height: 4 });
+console.assert([0, 1, 2, 3, 4, 5].every((x) => pixelAt(mirrored, x, 1) === pixelAt(tile, 5 - x, 1)), "a mirror is an exact mirror");
+// Fine black and white stripes turned 30 degrees keep their light; a canvas,
+// filtering gamma-encoded values, kept 0.31 of it where the stripes hold 0.5.
+const stripes = grey(120, 120, (x) => x % 2 ? 255 : 0);
+const turn = (degrees: number, cx: number, cy: number) => {
+  const t = (degrees * Math.PI) / 180; const cos = Math.cos(t); const sin = Math.sin(t);
+  return { a: cos, b: sin, c: -sin, d: cos, tx: cx - cos * cx + sin * cy, ty: cy - sin * cx - cos * cy };
+};
+const turnedStripes = transformRgba(stripes, 0, 0, turn(30, 60, 60), { x: 40, y: 40, width: 40, height: 40 });
+const light = greys(turnedStripes.data).reduce((total, value) => total + srgbToLinear(value / 255), 0) / 1600;
+console.assert(Math.abs(light - 0.5) < 0.01, `turned stripes keep half their light (${light.toFixed(3)}), as linear light must`);
+// A turned flat colour stays exactly that colour inside, and a turned edge
+// stays between its two sides.
+const flatTurned = transformRgba(grey(40, 40, () => 90), 0, 0, turn(17, 20, 20), { x: 15, y: 15, width: 10, height: 10 });
+console.assert(greys(flatTurned.data).every((value) => value === 90), "a turned flat colour is that colour");
+const edgeTurned = greys(transformRgba(grey(40, 40, (x) => x < 20 ? 64 : 192), 0, 0, turn(23, 20, 20), { x: 8, y: 8, width: 24, height: 24 }).data);
+console.assert(Math.min(...edgeTurned) === 64 && Math.max(...edgeTurned) === 192, "a turned edge has no halo");
+
+// Display P3, worked out from the primaries: the published matrix, and the
+// published P3 values of sRGB's red and green.
+const published = [[0.8224621, 0.177538, 0], [0.0331941, 0.9668058, 0], [0.0170827, 0.0723974, 0.9105199]];
+console.assert(SRGB_TO_DISPLAY_P3.every((row, i) => row.every((value, j) => Math.abs(value - published[i][j]) < 1e-6)), "sRGB to Display P3 is the published matrix");
+const p3 = srgbToDisplayP3({ width: 5, height: 1, data: Uint8ClampedArray.from([255, 0, 0, 255, 0, 255, 0, 255, 255, 255, 255, 255, 77, 77, 77, 128, 200, 30, 90, 1]) }).data;
+console.assert([...p3.slice(0, 8)].join() === "234,51,35,255,117,251,76,255", "sRGB red and green land where P3 puts them");
+console.assert([...p3.slice(8, 16)].join() === "255,255,255,255,77,77,77,128", "white and greys do not move - both spaces are D65");
+const opaqueTwin = srgbToDisplayP3({ width: 1, height: 1, data: Uint8ClampedArray.from([200, 30, 90, 255]) }).data;
+console.assert(p3[19] === 1 && [...p3.slice(16, 19)].join() === [...opaqueTwin.slice(0, 3)].join(),
+  "and alpha is untouched, so a nearly transparent pixel converts exactly as an opaque one");
 
 finish("resize-core.test.ts");

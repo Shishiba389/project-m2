@@ -90,9 +90,10 @@ function filterRow(row: Uint8Array, prior: Uint8Array, bpp: number, into: Uint8A
 
 /**
  * Encode 8-bit RGBA as a PNG: RGB when every pixel is opaque, RGBA otherwise,
- * tagged sRGB (which the pixels are), with the print density when given.
+ * with the print density when given. The pixels are tagged sRGB, or with
+ * `iccProfile` - the body of an iCCP chunk - when they are in another space.
  */
-export async function encodePng(image: RgbaBuffer, options: { dpi?: { x: number; y: number } } = {}): Promise<Uint8Array> {
+export async function encodePng(image: RgbaBuffer, options: { dpi?: { x: number; y: number }; iccProfile?: Uint8Array } = {}): Promise<Uint8Array> {
   const { width, height, data } = image;
   let opaque = true;
   for (let i = 3; i < data.length; i += 4) if (data[i] !== 255) { opaque = false; break; }
@@ -114,7 +115,8 @@ export async function encodePng(image: RgbaBuffer, options: { dpi?: { x: number;
   const view = new DataView(header.buffer);
   view.setUint32(0, width); view.setUint32(4, height);
   header[8] = 8; header[9] = opaque ? 2 : 6; // bit depth, colour type; compression, filter and interlace stay 0
-  const parts = [Uint8Array.from(SIGNATURE), chunk("IHDR", header), chunk("sRGB", Uint8Array.of(0))];
+  const parts = [Uint8Array.from(SIGNATURE), chunk("IHDR", header),
+    options.iccProfile ? chunk("iCCP", options.iccProfile) : chunk("sRGB", Uint8Array.of(0))];
   if (options.dpi) {
     const density = new Uint8Array(9);
     const densityView = new DataView(density.buffer);
@@ -163,6 +165,18 @@ function parse(bytes: Uint8Array): Parsed {
   }
   if (!header) throw new Error("PNG_INVALID: no header");
   return { ...header, palette, transparency, data, types };
+}
+
+/** The body of the first `type` chunk in a PNG, or null. */
+export function readChunk(bytes: Uint8Array, type: string): Uint8Array | null {
+  if (!isPng(bytes)) return null;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let at = 8; at + 12 <= bytes.length;) {
+    const length = view.getUint32(at);
+    if (ascii(bytes, at + 4) === type) return at + 12 + length <= bytes.length ? bytes.slice(at + 8, at + 8 + length) : null;
+    at += 12 + length;
+  }
+  return null;
 }
 
 /**

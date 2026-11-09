@@ -337,3 +337,145 @@ export function resizeRgba(source: RgbaBuffer, destinationWidth: number, destina
   for (let y = y0; y < y1; y += 1) writeRow(rows(y), data, (y - y0) * window.width * 4);
   return { width: window.width, height: window.height, data };
 }
+
+/* ------------------------------------------------------------ turning */
+
+/** A 2D affine transform in canvas order: x' = a x + c y + tx, y' = b x + d y + ty. */
+export type Affine = { a: number; b: number; c: number; d: number; tx: number; ty: number };
+
+/** The integers i in [from, to) for which f0 + k i lies in [low, high]. */
+function rangeWhere(f0: number, k: number, low: number, high: number, from: number, to: number): [number, number] {
+  if (k === 0) return f0 >= low && f0 <= high ? [from, to] : [from, from];
+  const a = (low - f0) / k; const b = (high - f0) / k;
+  return [Math.max(from, Math.ceil(Math.min(a, b))), Math.min(to, Math.floor(Math.max(a, b)) + 1)];
+}
+
+/**
+ * Draw `image` - its top-left corner at (`x`, `y`) - through `matrix` into
+ * `area` of the page, and return `area` as its own buffer.
+ *
+ * This is what a canvas did for a turned or mirrored picture, done the way
+ * the rest of MINIMA resamples: Catmull-Rom in linear light, premultiplied,
+ * each result held between the four nearest samples so a turned edge gets no
+ * halo. A canvas filters gamma-encoded sRGB instead, which darkens fine
+ * detail as it turns it - black and white stripes turned 30 degrees kept 0.31
+ * of their light, where the stripes hold 0.5 and this keeps 0.5 - and filters
+ * differently in each browser. A quarter turn or a mirror moves whole pixels and is copied
+ * exactly, never filtered.
+ */
+export function transformRgba(image: RgbaBuffer, x: number, y: number, matrix: Affine, area: ResizeWindow): RgbaBuffer {
+  const { a, b, c, d, tx, ty } = matrix;
+  const det = a * d - b * c;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) throw new Error("INVALID_TRANSFORM: the picture has no area");
+  // The inverse: where in the picture each page pixel comes from.
+  const ia = d / det; const ib = -b / det; const ic = -c / det; const id = a / det;
+  const itx = (c * ty - d * tx) / det; const ity = (b * tx - a * ty) / det;
+  const unit = (value: number) => Math.abs(value) < 1e-9 || Math.abs(Math.abs(value) - 1) < 1e-9;
+  const whole = unit(a) && unit(b) && unit(c) && unit(d);
+  const { width, height, data } = image;
+  const out = new Uint8ClampedArray(area.width * area.height * 4);
+  const wx = new Float64Array(4); const wy = new Float64Array(4);
+  const low = new Float64Array(4); const high = new Float64Array(4); const sum = new Float64Array(4);
+  for (let row = 0; row < area.height; row += 1) {
+    const cy = area.y + row + 0.5;
+    // In picture pixels, with pixel centres on integers: u = u0 + ia * px.
+    const u0 = ic * cy + itx - x - 0.5 + ia * 0.5;
+    const v0 = id * cy + ity - y - 0.5 + ib * 0.5;
+    // Only the pixels whose taps can reach the picture.
+    const [ua, ub] = rangeWhere(u0, ia, -2, width + 1, area.x, area.x + area.width);
+    const [va, vb] = rangeWhere(v0, ib, -2, height + 1, area.x, area.x + area.width);
+    for (let px = Math.max(ua, va); px < Math.min(ub, vb); px += 1) {
+      const u = u0 + ia * px; const v = v0 + ib * px;
+      const o = (row * area.width + px - area.x) * 4;
+      if (whole) {
+        const i = Math.round(u); const j = Math.round(v);
+        if (i < 0 || j < 0 || i >= width || j >= height) continue;
+        const s = (j * width + i) * 4;
+        out[o] = data[s]; out[o + 1] = data[s + 1]; out[o + 2] = data[s + 2]; out[o + 3] = data[s + 3];
+        continue;
+      }
+      const i0 = Math.floor(u); const j0 = Math.floor(v);
+      for (let k = 0; k < 4; k += 1) { wx[k] = cubicKernel(u - i0 - (k - 1)); wy[k] = cubicKernel(v - j0 - (k - 1)); }
+      sum.fill(0); low.fill(Infinity); high.fill(-Infinity);
+      for (let n = 0; n < 4; n += 1) {
+        const j = j0 - 1 + n;
+        for (let k = 0; k < 4; k += 1) {
+          const i = i0 - 1 + k;
+          const near = (n === 1 || n === 2) && (k === 1 || k === 2);
+          if (i < 0 || j < 0 || i >= width || j >= height) {
+            // Beyond the picture is transparent, and counts as such when it is one of the four nearest.
+            if (near) for (let ch = 0; ch < 4; ch += 1) { low[ch] = Math.min(low[ch], 0); high[ch] = Math.max(high[ch], 0); }
+            continue;
+          }
+          const s = (j * width + i) * 4; const weight = wx[k] * wy[n];
+          const alpha = UNIT_FROM_BYTE[data[s + 3]];
+          const r = LINEAR_FROM_BYTE[data[s]] * alpha; const g = LINEAR_FROM_BYTE[data[s + 1]] * alpha; const bl = LINEAR_FROM_BYTE[data[s + 2]] * alpha;
+          sum[0] += r * weight; sum[1] += g * weight; sum[2] += bl * weight; sum[3] += alpha * weight;
+          if (near) {
+            low[0] = Math.min(low[0], r); low[1] = Math.min(low[1], g); low[2] = Math.min(low[2], bl); low[3] = Math.min(low[3], alpha);
+            high[0] = Math.max(high[0], r); high[1] = Math.max(high[1], g); high[2] = Math.max(high[2], bl); high[3] = Math.max(high[3], alpha);
+          }
+        }
+      }
+      const alpha = Math.min(high[3], Math.max(low[3], sum[3]));
+      if (alpha < TINY_ALPHA) continue;
+      for (let ch = 0; ch < 3; ch += 1) {
+        const value = Math.min(high[ch], Math.max(low[ch], sum[ch]));
+        out[o + ch] = Math.round(linearToSrgb(Math.min(1, Math.max(0, value / alpha))) * 255);
+      }
+      out[o + 3] = Math.round(alpha * 255);
+    }
+  }
+  return { width: area.width, height: area.height, data: out };
+}
+
+/* ------------------------------------------------------------ Display P3 */
+
+type Matrix3 = number[][];
+const multiply3 = (m: Matrix3, n: Matrix3) => m.map((row) => [0, 1, 2].map((col) => row.reduce((total, value, k) => total + value * n[k][col], 0)));
+function invert3([[a, b, c], [d, e, f], [g, h, i]]: Matrix3): Matrix3 {
+  const A = e * i - f * h; const B = f * g - d * i; const C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  return [[A / det, (c * h - b * i) / det, (b * f - c * e) / det],
+    [B / det, (a * i - c * g) / det, (c * d - a * f) / det],
+    [C / det, (b * g - a * h) / det, (a * e - b * d) / det]];
+}
+/** Linear RGB to XYZ, from the primaries' and the white's chromaticities. */
+function rgbToXyz(primaries: [number, number][], [wx, wy]: [number, number]): Matrix3 {
+  const xyz = (cx: number, cy: number) => [cx / cy, 1, (1 - cx - cy) / cy];
+  const white = xyz(wx, wy);
+  const m = [0, 1, 2].map((row) => primaries.map(([cx, cy]) => xyz(cx, cy)[row]));
+  const scale = invert3(m).map((row) => row.reduce((total, value, k) => total + value * white[k], 0));
+  return m.map((row) => row.map((value, col) => value * scale[col]));
+}
+const D65: [number, number] = [0.3127, 0.329];
+/** Linear sRGB to linear Display P3: both are D65, so only the primaries move. */
+export const SRGB_TO_DISPLAY_P3 = multiply3(
+  invert3(rgbToXyz([[0.68, 0.32], [0.265, 0.69], [0.15, 0.06]], D65)),
+  rgbToXyz([[0.64, 0.33], [0.3, 0.6], [0.15, 0.06]], D65),
+);
+
+/**
+ * sRGB pixels as Display P3 pixels, which share sRGB's transfer curve. Done
+ * per pixel, unpremultiplied: alpha is untouched, and so is the colour of a
+ * nearly transparent pixel, which a P3 canvas premultiplied and rounded.
+ */
+export function srgbToDisplayP3(image: RgbaBuffer): RgbaBuffer {
+  const m = SRGB_TO_DISPLAY_P3;
+  const out = new Uint8ClampedArray(image.data.length);
+  const memo = new Map<number, number>();
+  const { data } = image;
+  for (let i = 0; i < data.length; i += 4) {
+    const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+    let packed = memo.get(key);
+    if (packed === undefined) {
+      const r = LINEAR_FROM_BYTE[data[i]]; const g = LINEAR_FROM_BYTE[data[i + 1]]; const b = LINEAR_FROM_BYTE[data[i + 2]];
+      const encode = (row: number[]) => Math.round(linearToSrgb(Math.min(1, Math.max(0, row[0] * r + row[1] * g + row[2] * b))) * 255);
+      packed = (encode(m[0]) << 16) | (encode(m[1]) << 8) | encode(m[2]);
+      // A photograph has a few hundred thousand distinct colours: remember them, within reason.
+      if (memo.size < 1 << 20) memo.set(key, packed);
+    }
+    out[i] = packed >> 16; out[i + 1] = (packed >> 8) & 255; out[i + 2] = packed & 255; out[i + 3] = data[i + 3];
+  }
+  return { width: image.width, height: image.height, data: out };
+}

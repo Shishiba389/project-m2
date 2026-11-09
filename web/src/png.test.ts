@@ -1,5 +1,5 @@
 import { begin } from "@/src/selfcheck";
-import { crc32, decodePng, encodePng, isPng, needsExactDecode } from "@/src/png";
+import { crc32, decodePng, encodePng, isPng, needsExactDecode, readChunk } from "@/src/png";
 
 const finish = begin();
 let state = 2024;
@@ -30,6 +30,12 @@ async function main() {
   const opaqueFile = await encodePng(opaque);
   console.assert(opaqueFile[25] === 2 && same((await decodePng(opaqueFile)).data, opaque.data), "an opaque image is written as RGB and round-trips");
   console.assert(!typesOf(opaqueFile).includes("pHYs"), "no density chunk unless asked for");
+  // Pixels in another space carry its profile instead of the sRGB tag.
+  const profile = Uint8Array.from([...new TextEncoder().encode("Display P3"), 0, 0, 1, 2, 3]);
+  const tagged = await encodePng(opaque, { iccProfile: profile });
+  console.assert(typesOf(tagged).join() === "IHDR,iCCP,IDAT,IEND" && same(readChunk(tagged, "iCCP")!, profile),
+    "a profile replaces the sRGB tag, byte for byte");
+  console.assert(readChunk(opaqueFile, "iCCP") === null, "and an sRGB file has none");
   // A smooth image compresses: the adaptive filters are doing their job.
   const smooth = { width: 256, height: 256, data: Uint8ClampedArray.from({ length: 256 * 256 * 4 }, (_, i) => i % 4 === 3 ? 255 : ((i >> 2) % 256 + (i >> 10)) & 255) };
   console.assert((await encodePng(smooth)).length < 256 * 256 * 3 / 20, "a gradient compresses to under 5% of its pixels");

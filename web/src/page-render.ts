@@ -10,14 +10,16 @@
  * every partly transparent pixel lost colour on the way in and again on the
  * way out (png.ts says how much). Here an axis-aligned picture on a
  * transparent page keeps exactly the bytes the resampler computed, and a PNG
- * is written from those bytes. Only a turned or mirrored picture still goes
- * through a canvas, which is the one thing that can draw it - and only that
- * picture, not the page under it.
+ * is written from those bytes. A turned or mirrored picture is drawn by
+ * `transformRgba`, in linear light like the resampler, where a canvas
+ * darkened fine detail by filtering it in gamma-encoded sRGB.
  */
 import { fullCrop, type ImageBox, type ImageElement } from "@/src/image-geometry";
 import { applyPoint, compose, identity, invert, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
-import { estimatePeakBytes, resizeRgba, validateDimensions, type RgbaBuffer, type Resampling, type ResizeWindow } from "@/src/resize-core";
-import { createCanvas, encodeRgba, rgbaCanvas, type Canvas2D, type EncodableFormat, type Profile } from "@/src/output-engine";
+import {
+  estimatePeakBytes, resizeRgba, transformRgba, validateDimensions, type RgbaBuffer, type Resampling, type ResizeWindow,
+} from "@/src/resize-core";
+import { createCanvas, encodeRgba, type EncodableFormat, type Profile } from "@/src/output-engine";
 import { decodePng, isPng, needsExactDecode } from "@/src/png";
 
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -74,7 +76,7 @@ export const boxPx = (box: Pick<ImageBox, "x" | "y" | "w" | "h">, page: { width:
  * `resizeRgba` with nothing after it; rotation is a rigid transform layered on
  * top of an already-resampled bitmap. If this function ever returned something
  * other than the identity for an unrotated box, every ordinary export would
- * silently go through canvas filtering instead of the bicubic pipeline.
+ * silently be filtered a second time by `transformRgba`.
  */
 export function elementTransform(box: ImageBox, page: { width: number; height: number }): Mat3 {
   if (!box.flipH && !box.flipV && !box.rotation) return identity();
@@ -101,9 +103,9 @@ const isIdentity = (matrix: Mat3) =>
  * `render` is where the resampled picture is drawn before the element's
  * rotation and mirror, `transform` is that rotation and mirror. The page is
  * mapped back through it, so a turned picture keeps every pixel its corners
- * sweep over. A turned or mirrored picture is drawn by the canvas's own
- * filter, which reads a pixel or two either side: those keep a margin. An
- * axis-aligned one is copied pixel for pixel, so its window is exact.
+ * sweep over. A turned picture is filtered by `transformRgba`, which reads a
+ * pixel or two either side: those keep a margin. An axis-aligned one is
+ * copied pixel for pixel, so its window is exact.
  *
  * A picture zoomed far past the page is mostly off it. Resampling all of it
  * only to clip it away cost time and memory, and past 20,000 px a side the
@@ -120,12 +122,6 @@ export function visibleWindow(render: Rect, transform: Mat3, page: { width: numb
   const x1 = Math.min(render.w, Math.ceil(Math.max(...corners.map((point) => point.x)) - render.x) + margin);
   const y1 = Math.min(render.h, Math.ceil(Math.max(...corners.map((point) => point.y)) - render.y) + margin);
   return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
-}
-
-/** Rotation and flip about a box's centre, shared by images and frames. */
-function transformAboutCentre(context: Canvas2D, box: ImageBox, page: { width: number; height: number }) {
-  const matrix = elementTransform(box, page);
-  context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty);
 }
 
 /**
@@ -291,37 +287,80 @@ function resampleLayer(source: RgbaBuffer, spec: FrameSpec, element: ImageElemen
   return { image, x: render.x + window.x, y: render.y + window.y, transform };
 }
 
+/** Whether a frame is still an upright rectangle on the page: unturned, or turned half way round. */
+const upright = (clip: ImageBox) => ((clip.rotation % 180) + 180) % 180 === 0;
+
+/** The integer pixel rectangle covering `points`, grown by `margin` and cut to `within`. */
+function pixelBounds(points: { x: number; y: number }[], margin: number, within: ResizeWindow): ResizeWindow | null {
+  const x0 = Math.max(within.x, Math.floor(Math.min(...points.map((point) => point.x))) - margin);
+  const y0 = Math.max(within.y, Math.floor(Math.min(...points.map((point) => point.y))) - margin);
+  const x1 = Math.min(within.x + within.width, Math.ceil(Math.max(...points.map((point) => point.x))) + margin);
+  const y1 = Math.min(within.y + within.height, Math.ceil(Math.max(...points.map((point) => point.y))) + margin);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+}
+
+/** A box's corners on the page, after its own rotation and mirror. */
+const cornersOf = (rect: Rect, transform: Mat3) => [[0, 0], [1, 0], [0, 1], [1, 1]]
+  .map(([u, v]) => applyPoint(transform, { x: rect.x + u * rect.w, y: rect.y + v * rect.h }));
+
+/**
+ * Cut a drawn layer (`drawn`, covering `area` of the page) to its frame.
+ *
+ * An upright frame keeps a pixel when its centre is inside, as a canvas clip
+ * does. A turned frame's edge crosses pixels at an angle, where that rule is a
+ * staircase - which is what a canvas drew. There each pixel keeps the share of
+ * it inside the frame, measured on a 4x4 grid, the way the editor's own view
+ * draws a turned frame.
+ */
+function cutToFrame(drawn: RgbaBuffer, area: ResizeWindow, clip: ImageBox, page: { width: number; height: number }) {
+  const rect = boxPx(clip, page);
+  const back = invert(elementTransform(clip, page)) ?? identity();
+  const turned = !upright(clip);
+  // Where a page point falls in the frame's own unturned rectangle.
+  const local = (x: number, y: number) => applyPoint(back, { x, y });
+  // How far inside the frame's edges that is; negative outside.
+  const depth = (point: { x: number; y: number }) =>
+    Math.min(point.x - rect.x, rect.x + rect.w - point.x, point.y - rect.y, rect.y + rect.h - point.y);
+  for (let row = 0; row < area.height; row += 1) for (let col = 0; col < area.width; col += 1) {
+    const o = (row * area.width + col) * 4;
+    if (drawn.data[o + 3] === 0) continue;
+    const px = area.x + col; const py = area.y + row;
+    const point = local(px + 0.5, py + 0.5);
+    const centre = depth(point);
+    let coverage: number;
+    // The canvas rule, as in compositeOver: in from the left and top edge, out at the right and bottom.
+    if (!turned) coverage = point.x >= rect.x && point.x < rect.x + rect.w && point.y >= rect.y && point.y < rect.y + rect.h ? 1 : 0;
+    else if (centre >= 0.75) coverage = 1; // further in than a pixel's half-diagonal
+    else if (centre <= -0.75) coverage = 0;
+    else {
+      let inside = 0;
+      for (let j = 0; j < 4; j += 1) for (let i = 0; i < 4; i += 1) if (depth(local(px + (i + 0.5) / 4, py + (j + 0.5) / 4)) > 0) inside += 1;
+      coverage = inside / 16;
+    }
+    if (coverage < 1) drawn.data[o + 3] = Math.round(drawn.data[o + 3] * coverage);
+  }
+}
+
 /**
  * Lay one resampled picture onto the page. An axis-aligned picture under an
- * axis-aligned clip is composited in software, byte for byte. A turned or
- * mirrored one is drawn by a canvas at its best filter - rounding alpha there,
- * as a canvas must - onto an empty page, which is then composited the same way.
+ * upright frame is composited byte for byte. A turned or mirrored one - or one
+ * under a turned frame - is drawn by `transformRgba` into the part of the page
+ * it can reach, cut to its frame, and composited the same way. No canvas.
  */
 function layDown(page: RgbaBuffer, resampled: Resampled, spec: FrameSpec, clip?: ImageBox) {
   if (!resampled) return;
-  const square = !clip || (((clip.rotation % 180) + 180) % 180 === 0);
-  if (isIdentity(resampled.transform) && square) {
-    compositeOver(page, resampled.image, resampled.x, resampled.y, clip ? boxPx(clip, spec) : undefined);
+  const { image, x, y, transform } = resampled;
+  if (isIdentity(transform) && (!clip || upright(clip))) {
+    compositeOver(page, image, x, y, clip ? boxPx(clip, spec) : undefined);
     return;
   }
-  const { context } = createCanvas(page.width, page.height, { willReadFrequently: true });
-  if (clip) {
-    // Clip in the frame's own rotated space, then draw the content back in
-    // page space: a canvas clip is fixed once set.
-    transformAboutCentre(context, clip, spec);
-    const rect = boxPx(clip, spec);
-    context.beginPath();
-    context.rect(rect.x, rect.y, rect.w, rect.h);
-    context.clip();
-    context.setTransform(1, 0, 0, 1, 0, 0);
-  }
-  const { transform } = resampled;
-  context.transform(transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty);
-  // A turned picture is resampled by the canvas: at its best filter, not its
-  // default bilinear, which softens the whole picture it turns.
-  context.imageSmoothingQuality = "high";
-  context.drawImage(rgbaCanvas(resampled.image).canvas, resampled.x, resampled.y);
-  compositeOver(page, { width: page.width, height: page.height, data: context.getImageData(0, 0, page.width, page.height).data }, 0, 0);
+  const whole = { x: 0, y: 0, width: page.width, height: page.height };
+  let area = pixelBounds(cornersOf({ x, y, w: image.width, h: image.height }, transform), 2, whole);
+  if (area && clip) area = pixelBounds(cornersOf(boxPx(clip, spec), elementTransform(clip, spec)), 1, area);
+  if (!area) return;
+  const drawn = transformRgba(image, x, y, transform, area);
+  if (clip) cutToFrame(drawn, area, clip, spec);
+  compositeOver(page, drawn, area.x, area.y);
 }
 
 /* ------------------------------------------------------------ the page */
