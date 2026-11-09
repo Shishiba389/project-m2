@@ -14,8 +14,8 @@
  */
 
 import { begin } from "@/src/selfcheck";
-import { encodeOutput } from "@/src/output-engine";
-import { estimatePeakBytes, resizeRgba, validateDimensions, type Resampling } from "@/src/resize-core";
+import { resizeFile } from "@/src/page-render";
+import { estimatePeakBytes, validateDimensions, type Resampling } from "@/src/resize-core";
 import { detectSubject, type Subject } from "@/src/subject";
 
 export type OutFormat = "png" | "jpg" | "webp";
@@ -371,37 +371,13 @@ export function makeZip(entries: ZipEntry[]): Uint8Array {
 
 /* ------------------------------------------------------------------ browser */
 
-/** Decode, EXIF-orient and resize one source with MINIMA's exact pixel core. */
-export async function renderOne(source: BatchSource, output: BatchOutput): Promise<Uint8Array> {
-  validateDimensions(output.width, output.height);
-  const bitmap = await createImageBitmap(source.file, { imageOrientation: "from-image" });
-  try {
-    const sourceCanvas = document.createElement("canvas");
-    sourceCanvas.width = bitmap.width; sourceCanvas.height = bitmap.height;
-    const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
-    if (!sourceContext) throw new Error("2D canvas is unavailable");
-    sourceContext.drawImage(bitmap, 0, 0);
-    const sourcePixels = sourceContext.getImageData(0, 0, bitmap.width, bitmap.height);
-    const resized = resizeRgba({ width: bitmap.width, height: bitmap.height, data: sourcePixels.data }, output.width, output.height,
-      { quality: output.resampling });
-    const canvas = document.createElement("canvas");
-    canvas.width = output.width; canvas.height = output.height;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("2D canvas is unavailable");
-    const imageData = context.createImageData(output.width, output.height); imageData.data.set(resized.data);
-    if (output.format === "jpg") {
-      const rgba = document.createElement("canvas"); rgba.width = output.width; rgba.height = output.height;
-      rgba.getContext("2d")!.putImageData(imageData, 0, 0);
-      context.fillStyle = output.jpegBackground; context.fillRect(0, 0, output.width, output.height);
-      context.drawImage(rgba, 0, 0);
-    } else context.putImageData(imageData, 0, 0);
-    return encodeOutput(canvas, {
-      format: output.format, quality: output.quality,
-      dpi: { x: output.dpi, y: output.dpi }, maxBytes: output.maxBytes ?? undefined,
-    });
-  } finally {
-    bitmap.close?.();
-  }
+/**
+ * Decode, EXIF-orient and resize one source with MINIMA's exact pixel core,
+ * on this thread - the fallback where workers cannot draw. The worker runs
+ * the very same function.
+ */
+export function renderOne(source: BatchSource, output: BatchOutput): Promise<Uint8Array> {
+  return resizeFile(source.file, output);
 }
 
 export type BatchProgress = {

@@ -16,47 +16,17 @@ import {
   assetKey, docFromPreset, elementOf, frameKey, orderStack, outputName, placementKey, presetById,
   type Asset, type Doc, type Format,
 } from "@/src/flow";
-import { fitInto, fullCrop, fullPageImage, type ImageBox, type ImageElement } from "@/src/image-geometry";
-import { applyPoint, compose, fromBox, identity, invert, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
+import { fitInto, fullPageImage, type ImageElement } from "@/src/image-geometry";
+import { applyPoint, fromBox, identity, invert } from "@/src/mat3";
 import { attachImage, contentPageElement, createFrame } from "@/src/frame-geometry";
-import { estimatePeakBytes, resizeRgba, validateDimensions, type Resampling, type ResizeWindow } from "@/src/resize-core";
-import { encodeOutput } from "@/src/output-engine";
+import {
+  boxPx, compositeOver, elementTransform, renderPage, templateKey, visibleWindow,
+  type FrameSpec, type Layer, type LayerCache, type Rect,
+} from "@/src/page-render";
+import type { ExportReply, ExportRequest } from "@/src/export-worker";
 
-export type Rect = { x: number; y: number; w: number; h: number };
-
-/** Everything a render needs, taken from the document. */
-export type FrameSpec = {
-  width: number;
-  height: number;
-  background: string;
-  /**
-   * The subject's own geometry. Its box is the picture: every image is drawn
-   * to fill its box, because Fit, Fill and Stretch now decide the box rather
-   * than how the picture sits inside one.
-   */
-  element: ImageElement;
-  /** The page's layer stack, bottom to top, including the queued image. */
-  layers: Layer[];
-  /** The asset being exported, so its layer is drawn from the open bitmap. */
-  queuedAssetId?: number;
-  /**
-   * False when the queued image already appears in `layers`. It is only drawn
-   * from `element` when it is not a page layer at all — the batch case, where
-   * the image is the page's subject rather than one of several layers.
-   */
-  drawElement?: boolean;
-  /** "classic" (the default) is the certified MINIMA resampler; "high" is the opt-in quality mode. */
-  resampling?: Resampling;
-};
-
-/** One layer of the page: a free image, or a frame's content clipped by it. */
-export type Layer = {
-  /** Which asset this layer draws, so the queued one can reuse its bitmap. */
-  assetId: number;
-  element: ImageElement;
-  file: File;
-  clip?: ImageBox;
-};
+/** The renderer moved to page-render.ts, which a worker can load; re-exported for existing callers. */
+export { boxPx, elementTransform, visibleWindow, templateKey, type FrameSpec, type Layer, type Rect };
 
 /**
  * The page's layer stack in the order the editor draws it: free images in
@@ -150,77 +120,9 @@ export const specFromDoc = (doc: Doc, assets: Asset[] = []): FrameSpec => ({
   layers: pageLayers(doc, assets),
 });
 
-/** A box in percentages of the page, as output pixels. */
-export const boxPx = (box: Pick<ImageBox, "x" | "y" | "w" | "h">, page: { width: number; height: number }): Rect => ({
-  x: (box.x / 100) * page.width, y: (box.y / 100) * page.height,
-  w: (box.w / 100) * page.width, h: (box.h / 100) * page.height,
-});
-
 /** An image element's destination box in output pixels. */
 export function framePx(spec: FrameSpec): Rect {
   return boxPx(spec.element.box, spec);
-}
-
-/**
- * The rotation and mirror an element carries, about its own centre.
- *
- * This is returned as a matrix rather than pushed straight into the canvas so
- * it can be asserted on, because one property of it is load-bearing: an
- * axis-aligned element must produce the identity. The MINIMA resampler is
- * separable and cannot express a rotation, so the certified path is
- * `resizeRgba` drawing through an identity transform; rotation is a rigid
- * transform layered on top of an already-resampled bitmap. If this function
- * ever returned something other than the identity for an unrotated box, every
- * ordinary batch export would silently start going through canvas filtering
- * instead of through the bicubic pipeline.
- */
-export function elementTransform(box: ImageBox, page: { width: number; height: number }): Mat3 {
-  if (!box.flipH && !box.flipV && !box.rotation) return identity();
-  const cx = (box.x + box.w / 2) / 100 * page.width;
-  const cy = (box.y + box.h / 2) / 100 * page.height;
-  // Read right to left: mirror first, then rotate - the order CSS
-  // `rotate() scale()` and `fromBox` use. The other order turns a mirrored
-  // image the opposite way in the file from the way it turns on screen.
-  return compose(
-    translation(cx, cy),
-    rotation(box.rotation),
-    scaling(box.flipH ? -1 : 1, box.flipV ? -1 : 1),
-    translation(-cx, -cy),
-  );
-}
-
-/**
- * The part of an element's rendered picture that can reach the page, in the
- * picture's own pixels - or null when none of it can.
- *
- * `render` is where the resampled picture is drawn before the element's
- * rotation and mirror, `transform` is that rotation and mirror. The page is
- * mapped back through it, so a turned picture keeps every pixel its corners
- * sweep over. A turned or mirrored picture is drawn by the canvas's own
- * filter, which reads a pixel or two either side: those keep a margin. An
- * axis-aligned one is copied pixel for pixel, so its window is exact.
- *
- * A picture zoomed far past the page is mostly off it. Resampling all of it
- * only to clip it away cost time and memory, and past 20,000 px a side the
- * export refused it outright.
- */
-export function visibleWindow(render: Rect, transform: Mat3, page: { width: number; height: number }): ResizeWindow | null {
-  const back = invert(transform) ?? identity();
-  const corners = [[0, 0], [page.width, 0], [0, page.height], [page.width, page.height]]
-    .map(([x, y]) => applyPoint(back, { x, y }));
-  const aligned = transform.a === 1 && transform.b === 0 && transform.c === 0 && transform.d === 1;
-  const margin = aligned ? 0 : 2;
-  const x0 = Math.max(0, Math.floor(Math.min(...corners.map((point) => point.x)) - render.x) - margin);
-  const y0 = Math.max(0, Math.floor(Math.min(...corners.map((point) => point.y)) - render.y) - margin);
-  const x1 = Math.min(render.w, Math.ceil(Math.max(...corners.map((point) => point.x)) - render.x) + margin);
-  const y1 = Math.min(render.h, Math.ceil(Math.max(...corners.map((point) => point.y)) - render.y) + margin);
-  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
-}
-
-/** Rotation and flip about a box's centre, shared by images and frames. */
-function transformAboutCentre(context: CanvasRenderingContext2D, box: ImageBox, page: { width: number; height: number }) {
-  const matrix = elementTransform(box, page);
-  context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty);
 }
 
 /** Moved to image-geometry with the rest of the layout maths; re-exported for existing callers. */
@@ -229,176 +131,6 @@ export { fitInto };
 /** An export's file extension, which TIFF cannot be: canvas cannot encode it. */
 export const encodableFormat = (format: Format): OutFormat =>
   (format === "tiff" ? "png" : format);
-
-/**
- * How much working memory one render may use: refuse a render before
- * allocating it instead of freezing the browser tab.
- *
- * Measured, not guessed. The batch path asks the browser for its own heap
- * limit and allows a render half of it, and so does this. The resampler now
- * streams, so a render costs about its 8-bit source and output - this cap is
- * for the truly enormous, not for ordinary product shots.
- *
- * Only Chromium reports the limit, and a privacy setting can hide it there
- * too. Assuming a single gigabyte when it is missing refuses photographs that
- * a laptop handles without noticing, so the blind case assumes an ordinary
- * desktop instead of the smallest machine imaginable.
- */
-function renderBudget() {
-  const perf = performance as Performance & { memory?: { jsHeapSizeLimit: number } };
-  const measured = perf.memory?.jsHeapSizeLimit;
-  return measured ? Math.max(512 * 1024 * 1024, Math.floor(measured / 2)) : 1536 * 1024 * 1024;
-}
-
-/* ------------------------------------------------------------------ browser */
-
-export async function renderFramed(file: File, spec: FrameSpec, format: OutFormat, quality: number,
-  metadata: { dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" } = {},
-  templates: LayerCache = new Map()): Promise<Uint8Array> {
-  validateDimensions(spec.width, spec.height);
-  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
-  try {
-    const sourceCanvas = document.createElement("canvas");
-    sourceCanvas.width = bitmap.width;
-    sourceCanvas.height = bitmap.height;
-    const sourceContext = sourceCanvas.getContext("2d", { willReadFrequently: true });
-    if (!sourceContext) throw new Error("2D canvas is unavailable");
-    sourceContext.drawImage(bitmap, 0, 0);
-
-    const canvas = document.createElement("canvas");
-    canvas.width = spec.width;
-    canvas.height = spec.height;
-    const context = canvas.getContext("2d", { colorSpace: metadata.profile === "display-p3" ? "display-p3" : "srgb" } as CanvasRenderingContext2DSettings);
-    if (!context) throw new Error("2D canvas is unavailable");
-
-    if (spec.background !== "transparent" || format === "jpg") {
-      context.fillStyle = spec.background === "transparent" ? "#ffffff" : spec.background;
-      context.fillRect(0, 0, spec.width, spec.height);
-    }
-
-    context.save();
-    // The output page is the crop boundary. An element may freely sit outside
-    // it, just as it does in the editor.
-    context.beginPath();
-    context.rect(0, 0, spec.width, spec.height);
-    context.clip();
-    // Only the batch case draws from `element`: there the image is the page's
-    // subject, underneath whatever else the page holds.
-    if (spec.drawElement !== false) drawResampled(context, resampleLayer(bitmap, sourceContext, spec, spec.element));
-    for (const layer of spec.layers) {
-      // The queued image is already decoded and is different in every file.
-      // Every other layer is the template around it: the same pixels in the
-      // same place on every page, decoded and resampled once per run.
-      const queued = layer.assetId === spec.queuedAssetId;
-      let resampled: Resampled | undefined;
-      if (queued) resampled = resampleLayer(bitmap, sourceContext, spec, layer.element);
-      else {
-        const key = templateKey(layer, spec);
-        resampled = templates.get(key);
-        if (resampled === undefined) {
-          const source = await createImageBitmap(layer.file, { imageOrientation: "from-image" });
-          try {
-            const layerCanvas = document.createElement("canvas");
-            layerCanvas.width = source.width; layerCanvas.height = source.height;
-            const context2d = layerCanvas.getContext("2d", { willReadFrequently: true });
-            if (!context2d) throw new Error("2D canvas is unavailable");
-            context2d.drawImage(source, 0, 0);
-            resampled = resampleLayer(source, context2d, spec, layer.element);
-          } finally {
-            source.close?.();
-          }
-          templates.set(key, resampled);
-        }
-      }
-      context.save();
-      if (layer.clip) {
-        // Clip in the frame's own rotated space, then draw the content back
-        // in page space: a canvas clip is fixed once set.
-        transformAboutCentre(context, layer.clip, spec);
-        const rect = boxPx(layer.clip, spec);
-        context.beginPath();
-        context.rect(rect.x, rect.y, rect.w, rect.h);
-        context.clip();
-        context.setTransform(1, 0, 0, 1, 0, 0);
-      }
-      drawResampled(context, resampled);
-      context.restore();
-    }
-    context.restore();
-
-    return encodeOutput(canvas, {
-      format, quality, dpi: metadata.dpi ? { x: metadata.dpi, y: metadata.dpi } : undefined,
-      maxBytes: metadata.maxBytes ?? undefined,
-    });
-  } finally {
-    bitmap.close?.();
-  }
-}
-
-/** A picture resampled for its place on the page, ready to draw - or null when none of it is on the page. */
-type Resampled = { canvas: HTMLCanvasElement; x: number; y: number; transform: Mat3 } | null;
-/**
- * Template layers, resampled once per export run. Every file of a batch puts
- * its own image into the same template; the frames, backdrops and logos
- * around it are the same pixels in the same place on every page, and decoding
- * and resampling them again for each file was most of a templated batch's time.
- */
-export type LayerCache = Map<string, Resampled>;
-/** What a template layer's pixels depend on: its source, its geometry, the page and the resampler. */
-export const templateKey = (layer: Pick<Layer, "assetId" | "element">, spec: Pick<FrameSpec, "width" | "height" | "resampling">) =>
-  `${layer.assetId}|${spec.width}x${spec.height}|${spec.resampling ?? "classic"}|${JSON.stringify(layer.element)}`;
-
-/** Resample one image element for the page with the editor's own geometry. */
-function resampleLayer(
-  bitmap: ImageBitmap,
-  sourceContext: CanvasRenderingContext2D,
-  spec: FrameSpec,
-  element: ImageElement,
-): Resampled {
-  const crop = element.crop ?? fullCrop();
-  const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
-  const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
-  // The box is the picture: the cropped source fills it exactly, which is what
-  // the preview draws, and the page or frame clips whatever overflows.
-  const dest = boxPx(element.box, spec);
-  const render = { x: Math.round(dest.x), y: Math.round(dest.y), w: Math.max(1, Math.round(dest.w)), h: Math.max(1, Math.round(dest.h)) };
-  const transform = elementTransform(element.box, spec);
-  // Only the part of the picture that can land on the page is resampled; the
-  // pixels are the ones the whole picture would have had there.
-  const window = visibleWindow(render, transform, spec);
-  if (!window) return null;
-  const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, render.w, render.h, window);
-  const budget = renderBudget();
-  if (peakBytes > budget) {
-    throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory, `
-      + `and this browser allows ${Math.floor(budget / 1_048_576)} MB. Resize the source down first, or export it on its own.`);
-  }
-  const sourceX = Math.floor(crop.left * bitmap.width);
-  const sourceY = Math.floor(crop.top * bitmap.height);
-  const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
-  const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, render.w, render.h,
-    { window, quality: spec.resampling });
-  const resizedCanvas = document.createElement("canvas");
-  resizedCanvas.width = resized.width;
-  resizedCanvas.height = resized.height;
-  const imageData = resizedCanvas.getContext("2d")!.createImageData(resized.width, resized.height);
-  imageData.data.set(resized.data);
-  resizedCanvas.getContext("2d")!.putImageData(imageData, 0, 0);
-  return { canvas: resizedCanvas, x: render.x + window.x, y: render.y + window.y, transform };
-}
-
-function drawResampled(context: CanvasRenderingContext2D, resampled: Resampled) {
-  if (!resampled) return;
-  const { transform } = resampled;
-  context.save();
-  context.transform(transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty);
-  // An axis-aligned picture is copied pixel for pixel and never filtered. A
-  // turned one is resampled by the canvas: at its best filter, not its
-  // default bilinear, which softens the whole picture it turns.
-  context.imageSmoothingQuality = "high";
-  context.drawImage(resampled.canvas, resampled.x, resampled.y);
-  context.restore();
-}
 
 export type ExportProgress = {
   done: number;
@@ -410,8 +142,68 @@ export type ExportProgress = {
 export const EXPORT_ZIP = "minima-export.zip";
 
 /**
- * Render the queue and return the zip. `onProgress` fires per file, and
- * `shouldStop` is polled between files so Cancel takes effect promptly.
+ * Where the pages are rendered: a worker when the platform can draw off
+ * screen in one, so the editor keeps responding while a batch exports - a
+ * large page used to hold the main thread for most of a second per file -
+ * and the main thread otherwise, with the same code and the same pixels.
+ */
+type Renderer = { render: (request: Omit<ExportRequest, "id">) => Promise<Uint8Array>; close: () => void };
+
+/** The worker itself cannot run here, as opposed to one file failing in it. */
+class WorkerUnavailable extends Error {}
+
+function mainThreadRenderer(): Renderer {
+  const templates: LayerCache = new Map();
+  return {
+    render: ({ file, spec, format, quality, metadata }) => renderPage(file, spec, format, quality, metadata, templates),
+    close: () => templates.clear(),
+  };
+}
+
+function workerRenderer(): Renderer {
+  const worker = new Worker(new URL("./export-worker.ts", import.meta.url), { type: "module" });
+  const pending = new Map<number, { resolve: (bytes: Uint8Array) => void; reject: (error: Error) => void }>();
+  let next = 0;
+  let broken: Error | null = null;
+  const fail = (error: Error) => { for (const job of pending.values()) job.reject(error); pending.clear(); };
+  worker.onmessage = (event: MessageEvent<ExportReply>) => {
+    const job = pending.get(event.data.id);
+    if (!job) return;
+    pending.delete(event.data.id);
+    const { bytes, error } = event.data;
+    if (error === undefined) job.resolve(new Uint8Array(bytes!));
+    else job.reject(error.startsWith("CANVAS_UNAVAILABLE") ? new WorkerUnavailable(error) : new Error(error));
+  };
+  worker.onerror = (event) => {
+    event.preventDefault();
+    broken = new WorkerUnavailable(event.message || "the export worker could not start");
+    fail(broken);
+  };
+  return {
+    render: (request) => new Promise((resolve, reject) => {
+      if (broken) { reject(broken); return; }
+      const id = next++;
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ ...request, id } satisfies ExportRequest);
+    }),
+    close: () => { worker.terminate(); fail(new Error("stopped")); },
+  };
+}
+
+const STOPPED = Symbol("stopped");
+/** `work`, or STOPPED as soon as `shouldStop` says so - checked ten times a second while the worker renders. */
+function untilStopped<T>(work: Promise<T>, shouldStop: () => boolean): Promise<T | typeof STOPPED> {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stop = new Promise<typeof STOPPED>((resolve) => { timer = setInterval(() => { if (shouldStop()) resolve(STOPPED); }, 100); });
+  // Stopping terminates the worker, which rejects `work` after the race is
+  // over: that rejection is expected, not an error to report.
+  work.catch(() => undefined);
+  return Promise.race([work, stop]).finally(() => clearInterval(timer));
+}
+
+/**
+ * Render the queue and return the zip. `onProgress` fires per file. Cancel
+ * stops the file in progress: the worker rendering it is terminated.
  * A file that cannot be decoded is one skipped entry, not an aborted run.
  */
 export async function runExport(
@@ -429,41 +221,57 @@ export async function runExport(
   const entries: ZipEntry[] = [];
   const progress: ExportProgress = { done: 0, total: queue.length, current: "", failed: [] };
   const taken = new Set<string>();
-  const templates: LayerCache = new Map();
+  const metadata = { dpi: naming.dpi, maxBytes, profile: naming.profile };
+  let renderer = typeof Worker !== "undefined" && typeof OffscreenCanvas !== "undefined" ? workerRenderer() : mainThreadRenderer();
 
-  for (const unit of queue) {
-    const asset = unit.asset;
-    if (shouldStop()) return { zip: makeZip(entries), progress, stopped: true };
-    progress.current = asset.name;
-    onProgress({ ...progress, failed: [...progress.failed] });
-    try {
-      if (!asset.file) throw new Error("no source file");
-      // The subject is drawn exactly once: in its own place in the stack when
-      // the document places it there, and from `element` when it does not -
-      // the case where the canvas is a template and this image is being run
-      // through it.
-      const assetSpec = {
-        ...spec, layers: unit.layers, element: unit.element, queuedAssetId: asset.id,
-        drawElement: !unit.layers.some((layer) => layer.assetId === asset.id),
-      };
-      const data = await renderFramed(asset.file, assetSpec, format, naming.quality, { ...naming, maxBytes }, templates);
-      const custom = naming.customNames?.[asset.id]?.trim();
-      let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
-      let n = 2;
-      while (taken.has(name.toLowerCase())) {
-        const dot = name.lastIndexOf(".");
-        name = `${name.slice(0, dot)} (${n++})${name.slice(dot)}`;
+  try {
+    for (const unit of queue) {
+      const asset = unit.asset;
+      if (shouldStop()) return { zip: makeZip(entries), progress, stopped: true };
+      progress.current = asset.name;
+      onProgress({ ...progress, failed: [...progress.failed] });
+      try {
+        if (!asset.file) throw new Error("no source file");
+        // The subject is drawn exactly once: in its own place in the stack when
+        // the document places it there, and from `element` when it does not -
+        // the case where the canvas is a template and this image is being run
+        // through it.
+        const assetSpec = {
+          ...spec, layers: unit.layers, element: unit.element, queuedAssetId: asset.id,
+          drawElement: !unit.layers.some((layer) => layer.assetId === asset.id),
+        };
+        const request = { file: asset.file, spec: assetSpec, format, quality: naming.quality, metadata };
+        let data: Uint8Array | typeof STOPPED;
+        try {
+          data = await untilStopped(renderer.render(request), shouldStop);
+        } catch (error) {
+          if (!(error instanceof WorkerUnavailable)) throw error;
+          // No worker here after all: render on this thread from now on.
+          renderer.close();
+          renderer = mainThreadRenderer();
+          data = await renderer.render(request);
+        }
+        if (data === STOPPED) return { zip: makeZip(entries), progress, stopped: true };
+        const custom = naming.customNames?.[asset.id]?.trim();
+        let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
+        let n = 2;
+        while (taken.has(name.toLowerCase())) {
+          const dot = name.lastIndexOf(".");
+          name = `${name.slice(0, dot)} (${n++})${name.slice(dot)}`;
+        }
+        taken.add(name.toLowerCase());
+        entries.push({ name, data });
+      } catch (error) {
+        progress.failed.push({ name: asset.name, reason: (error as Error).message || "could not be read" });
       }
-      taken.add(name.toLowerCase());
-      entries.push({ name, data });
-    } catch (error) {
-      progress.failed.push({ name: asset.name, reason: (error as Error).message || "could not be read" });
+      progress.done += 1;
+      onProgress({ ...progress, failed: [...progress.failed] });
+      // On the main thread, this is the browser's chance to paint progress and
+      // receive Cancel. The pixel work remains deterministic and sequential.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
-    progress.done += 1;
-    onProgress({ ...progress, failed: [...progress.failed] });
-    // Give the browser a chance to paint progress and receive Cancel between
-    // expensive files. The pixel work remains deterministic and sequential.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  } finally {
+    renderer.close();
   }
   return { zip: makeZip(entries), progress, stopped: false };
 }
@@ -626,6 +434,33 @@ export function demo() {
     templateKey(logo, { width: 1000, height: 2001 }),
     templateKey(logo, { ...pageSpec, resampling: "high" }),
   ]).size === 5, "a different source, place, page or resampler is a different layer");
+
+  /* ------------------------------------------- the page, composited exactly
+
+     A canvas premultiplies and rounds every partly transparent pixel. The
+     page is composited here instead, so what the resampler wrote is what
+     the file holds. */
+  const rgba = (width: number, height: number, pixels: number[]) => ({ width, height, data: Uint8ClampedArray.from(pixels) });
+  const blank = () => rgba(3, 2, new Array(24).fill(0));
+  const faint = rgba(2, 1, [200, 100, 50, 1, 7, 9, 250, 3]);
+  const onClear = blank();
+  compositeOver(onClear, faint, 1, 1);
+  console.assert([...onClear.data.slice(16, 24)].join() === "200,100,50,1,7,9,250,3",
+    "on a transparent page every byte lands as it is - even at alpha 1, where a canvas keeps no colour at all");
+  console.assert(onClear.data.slice(0, 16).every((value) => value === 0), "and nothing lands outside the picture");
+  const red = rgba(1, 1, [255, 0, 0, 128]);
+  const blue = rgba(1, 1, [0, 0, 255, 255]);
+  compositeOver(blue, red, 0, 0);
+  console.assert([...blue.data].join() === "128,0,127,255", "over an opaque pixel it is ordinary source-over");
+  // A canvas clip is hard-edged: a pixel is in when its centre is (measured
+  // in Chrome: a rect from 10.5 to 26 keeps pixels 10 to 25). So is this one.
+  const strip = rgba(4, 1, new Array(16).fill(0));
+  compositeOver(strip, rgba(4, 1, new Array(16).fill(200)), 0, 0, { x: 0.5, y: 0.25, w: 1.9, h: 0.5 });
+  console.assert([...strip.data].filter((_, i) => i % 4 === 3).join() === "200,200,0,0",
+    "a clip edge through a pixel keeps it whole when it holds the centre, and drops it otherwise");
+  const off = blank();
+  compositeOver(off, rgba(2, 2, new Array(16).fill(255)), -1, -1);
+  console.assert(off.data[3] === 255 && off.data[7] === 0 && off.data[15] === 0, "a picture hanging off the page is cut at its edge");
 
   /* ------------------------------------------------ the stack reaches the file
 
