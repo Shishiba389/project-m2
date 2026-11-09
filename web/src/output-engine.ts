@@ -1,4 +1,9 @@
+import { crc32, encodePng, readChunk } from "@/src/png";
+import { srgbToDisplayP3, type RgbaBuffer } from "@/src/resize-core";
+
 export type EncodableFormat = "png" | "jpg" | "webp";
+export type Profile = "srgb" | "display-p3" | "rec709";
+export type Canvas2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 export type OutputEncoding = {
   format: EncodableFormat;
@@ -17,21 +22,44 @@ async function canvasBlob(canvas: HTMLCanvasElement | OffscreenCanvas, format: E
   ));
 }
 
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-  for (let n = 0; n < 256; n += 1) {
-    let c = n;
-    for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    table[n] = c >>> 0;
+/**
+ * A canvas that works on the main thread and in a worker: an OffscreenCanvas
+ * where the platform can draw on one, a document canvas otherwise.
+ */
+export function createCanvas(width: number, height: number, settings?: CanvasRenderingContext2DSettings): {
+  canvas: OffscreenCanvas | HTMLCanvasElement; context: Canvas2D;
+} {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas = new OffscreenCanvas(width, height);
+    const context = canvas.getContext("2d", settings);
+    if (context) return { canvas, context };
   }
-  return table;
-})();
-
-function crc32(bytes: Uint8Array) {
-  let c = 0xffffffff;
-  for (const byte of bytes) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
+  if (typeof document !== "undefined") {
+    const canvas = document.createElement("canvas");
+    canvas.width = width; canvas.height = height;
+    const context = canvas.getContext("2d", settings);
+    if (context) return { canvas, context };
+  }
+  throw new Error("CANVAS_UNAVAILABLE: this browser cannot draw off screen");
 }
+
+/**
+ * 8-bit RGBA on a canvas. Lossless only where alpha is 255: a canvas stores
+ * colour premultiplied, so anything partly transparent is rounded on the way in.
+ */
+export function rgbaCanvas(image: RgbaBuffer, settings?: CanvasRenderingContext2DSettings) {
+  const target = createCanvas(image.width, image.height, settings);
+  const pixels = target.context.createImageData(image.width, image.height);
+  pixels.data.set(image.data);
+  target.context.putImageData(pixels, 0, 0);
+  return target;
+}
+
+const pngLimit = (size: number, limit: number) => new Error(
+  // Reachable only from a saved workflow written before the dialog stopped
+  // offering the pair. Say which of the two settings has to give.
+  `FILE_SIZE_LIMIT_UNREACHABLE: PNG is lossless, so ${size} bytes cannot be reduced to `
+  + `${limit}. Export as JPG or WebP, or clear the size limit.`);
 
 /** Insert a standards-compliant PNG pHYs chunk immediately after IHDR. */
 export function writePngDpi(input: Uint8Array, xDpi: number, yDpi: number) {
@@ -81,12 +109,7 @@ export async function encodeOutput(canvas: HTMLCanvasElement | OffscreenCanvas, 
   let bytes: Uint8Array;
   if (byteLimit === undefined || options.format === "png") {
     bytes = await encode(options.quality);
-    if (byteLimit !== undefined && bytes.length > byteLimit) {
-      // Reachable only from a saved workflow written before the dialog stopped
-      // offering the pair. Say which of the two settings has to give.
-      throw new Error(`FILE_SIZE_LIMIT_UNREACHABLE: PNG is lossless, so ${bytes.length} bytes cannot be reduced to `
-        + `${options.maxBytes}. Export as JPG or WebP, or clear the size limit.`);
-    }
+    if (byteLimit !== undefined && bytes.length > byteLimit) throw pngLimit(bytes.length, options.maxBytes!);
   } else {
     bytes = await encode(options.quality);
     if (bytes.length > byteLimit) {
@@ -107,4 +130,49 @@ export async function encodeOutput(canvas: HTMLCanvasElement | OffscreenCanvas, 
   if (options.dpi && options.format === "png") return writePngDpi(bytes, options.dpi.x, options.dpi.y);
   if (options.dpi && options.format === "jpg") return writeJpegDpi(bytes, options.dpi.x, options.dpi.y);
   return bytes;
+}
+
+let displayP3: Promise<Uint8Array | null> | null = null;
+/**
+ * The browser's own Display P3 profile, as an iCCP chunk body: read once out
+ * of the PNG a one-pixel P3 canvas writes, so a P3 file carries exactly the
+ * profile the browser itself would have given it.
+ */
+function displayP3Profile() {
+  displayP3 ??= (async () => {
+    const { canvas } = createCanvas(1, 1, { colorSpace: "display-p3" });
+    return readChunk(new Uint8Array(await (await canvasBlob(canvas, "png", 100)).arrayBuffer()), "iCCP");
+  })().catch(() => null);
+  return displayP3;
+}
+
+/**
+ * Encode finished 8-bit sRGB RGBA pixels.
+ *
+ * PNG is written by `encodePng`, straight from the bytes: a canvas would
+ * premultiply every partly transparent pixel and round its colour away (see
+ * png.ts). A Display P3 PNG is converted in software (`srgbToDisplayP3`) and
+ * tagged with the browser's P3 profile. JPG and WebP have only the platform's
+ * encoders, so they still go through a canvas - losslessly for JPG, which is
+ * always flattened onto an opaque background first - and a P3 canvas converts
+ * and tags those.
+ */
+export async function encodeRgba(image: RgbaBuffer, options: OutputEncoding & { profile?: Profile }) {
+  const p3 = options.profile === "display-p3";
+  if (options.format === "png") {
+    const iccProfile = p3 ? await displayP3Profile() : null;
+    // Without the profile a P3 file could not say it is P3: let the canvas write it.
+    if (!p3 || iccProfile) {
+      const bytes = await encodePng(p3 ? srgbToDisplayP3(image) : image, { dpi: options.dpi, iccProfile: iccProfile ?? undefined });
+      if (options.maxBytes && bytes.length > options.maxBytes) throw pngLimit(bytes.length, options.maxBytes);
+      return bytes;
+    }
+  }
+  let { canvas } = rgbaCanvas(image);
+  if (p3) {
+    const p3 = createCanvas(image.width, image.height, { colorSpace: "display-p3" });
+    p3.context.drawImage(canvas, 0, 0);
+    canvas = p3.canvas;
+  }
+  return encodeOutput(canvas, options);
 }

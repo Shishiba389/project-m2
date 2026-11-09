@@ -1284,7 +1284,7 @@ export function MinimaWorkspace() {
     setExportOpen(false);
     setRunDone(false);
     setRun({ done: 0, total: run.length, current: "", failed: [] });
-    const result = await runExport(run, specFromDoc(doc, assets), exportOptions,
+    const result = await runExport(run, { ...specFromDoc(doc, assets), resampling: exportOptions.resampling }, exportOptions,
       (progress) => setRun(progress),
       () => cancelExport.current);
     exportZip.current = result.zip;

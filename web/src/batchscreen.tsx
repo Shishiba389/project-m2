@@ -66,10 +66,17 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
   const estimate = estimateBytes(sources, output);
 
   // Previews are object URLs, so they have to be released when the set changes.
-  const previews = useMemo(() => sources.slice(0, 6).map((source) => ({
-    id: source.id, name: source.name, url: URL.createObjectURL(source.thumbnail ?? source.file),
-  })), [sources]);
-  useEffect(() => () => previews.forEach((preview) => URL.revokeObjectURL(preview.url)), [previews]);
+  // They are made in the same effect that releases them: made in a memo, a
+  // remount (StrictMode does one on every load in development) released them
+  // and kept showing the dead URLs.
+  const [previews, setPreviews] = useState<{ id: number; name: string; url: string }[]>([]);
+  useEffect(() => {
+    const next = sources.slice(0, 6).map((source) => ({
+      id: source.id, name: source.name, url: URL.createObjectURL(source.thumbnail ?? source.file),
+    }));
+    setPreviews(next);
+    return () => next.forEach((preview) => URL.revokeObjectURL(preview.url));
+  }, [sources]);
 
   const start = async () => {
     if (!sources.length) return;
@@ -134,6 +141,16 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
             {FORMATS.map((format) => <button key={format} className={output.format === format ? "active" : ""}
               onClick={() => setOutput((current) => ({ ...current, format }))}>{format.toUpperCase()}</button>)}
           </div>
+          <span className="field-label" id="batch-resampling">Resampling</span>
+          <div className="format-chips" role="radiogroup" aria-labelledby="batch-resampling">
+            {([["classic", "MINIMA classic"], ["high", "High quality"]] as const).map(([value, label]) =>
+              <button key={value} role="radio" aria-checked={(output.resampling ?? "classic") === value}
+                className={(output.resampling ?? "classic") === value ? "active" : ""}
+                onClick={() => setOutput((current) => ({ ...current, resampling: value }))}>{label}</button>)}
+          </div>
+          <p className="batch-hint">{output.resampling === "high"
+            ? "Less moiré on fine patterns and no halo along edges. About twice as slow, and the pixels differ from MINIMA desktop."
+            : "The certified resampler: the same pixels as MINIMA desktop."}</p>
           {output.format !== "png" && <>
             <div className="slider-label"><span>Quality</span><strong>{output.quality}</strong></div>
             <Slider value={[output.quality]} min={40} max={100} step={1}
