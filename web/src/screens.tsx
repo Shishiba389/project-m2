@@ -3,7 +3,8 @@ import {
   AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical,
   AlignHorizontalSpaceAround, AlignStartHorizontal, AlignStartVertical, AlignVerticalSpaceAround,
   Check, ChevronLeft, ChevronRight, Cloud, Copy, FileImage, FolderOpen, Grid2X2, Layers3,
-  ListFilter, Package, Pencil, Plus, Search, Share2, Trash2, TriangleAlert, Upload, Zap,
+  Ellipsis, FlipHorizontal, FlipVertical, ListFilter, Minus, Package, Pencil, Plus, RotateCcw, RotateCw,
+  Search, Share2, Trash2, TriangleAlert, Upload, X, Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -14,14 +15,18 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
-  assetKey, frameKey, HANDLES, megabytes, orderStack, presetById, ratioLabel, resolutionOf,
+  assetKey, elementOf, frameKey, HANDLES, megabytes, orderStack, presetById, ratioLabel, resolutionOf,
   statusOf, warningReason,
   type Asset, type CanvasLayer, type Doc, type DupPolicy, type Format, type GalleryFilter, type Handle,
   type Preset, type Resolution, type Status, type WarningReason,
 } from "@/src/flow";
-import { cropImage, fullCrop, fullPageImage, handleCursor, moveCrop, nudgeImage, resizeCrop, type CropRect, type ImageBox, type ImageElement } from "@/src/image-geometry";
-import { dragTo, handlePagePoint, handlePoint, resizeTo, rotateTo, scaleBy, toLocal, toParentPercent } from "@/src/gestures";
+import { cropImage, fullCrop, handleCursor, moveCrop, nudgeImage, resizeCrop, type CropRect, type ImageBox, type ImageElement } from "@/src/image-geometry";
+import {
+  cropEdgeTo, croppedBox, dragTo, handlePagePoint, handlePoint, resizeTo, rotateTo, scaleBy, scaleUnderWindow,
+  slideUnderWindow, toLocal, toParentPercent, uncroppedBox,
+} from "@/src/gestures";
 import { frameAt, frameFromDrag, type FrameElement } from "@/src/frame-geometry";
+import { isWhole, subjectInBox } from "@/src/subject";
 import { toCss } from "@/src/mat3";
 import {
   boxBounds, noSnap, pageTargets, snapMove, tolerance,
@@ -196,7 +201,7 @@ const needsLocator = (asset: Asset) => asset.faint === true;
 const STATUS_FILTERS: ("All" | Status)[] = ["All", "Completed", "Pending", "Warning", "Error"];
 const FORMATS: Format[] = ["png", "jpg", "webp", "tiff"];
 const RESOLUTIONS: Resolution[] = ["large", "medium", "small"];
-const ERROR_TYPES: [WarningReason | "corrupt", string][] = [["aspect", "Aspect ratio"], ["safe", "Safe area"], ["corrupt", "Corrupted"]];
+const ERROR_TYPES: [WarningReason | "corrupt", string][] = [["upscale", "Enlarged past source"], ["clipping", "Cut off by the page"], ["corrupt", "Corrupted"]];
 
 export function ProductPlaceholder({ kind, large = false }: { kind: Asset["kind"]; large?: boolean }) {
   const label = kind === "shoe" ? "FOOTWEAR" : kind === "beauty" ? "BEAUTY" : kind === "fashion" ? "APPAREL" : "FRAGRANCE";
@@ -207,7 +212,7 @@ export function StatusBadge({ status }: { status: Status }) {
   return <span className={`status-badge status-${status.toLowerCase()}`}>
     {status === "Completed" && <Check size={12} />}
     {status === "Warning" && <TriangleAlert size={12} />}
-    {status === "Error" && <span aria-hidden="true">✕</span>}
+    {status === "Error" && <X size={12} aria-hidden="true" />}
     {status === "Pending" && <span className="status-dot" />}
     {status}
   </span>;
@@ -227,19 +232,19 @@ export function AssetImage({ asset, fit, large, style }: { asset: Asset; fit?: "
     style={{ ...(fit ? { objectFit: fit } : {}), ...style }} />;
 }
 
-const objectPositionFor = (align: Doc["align"]) => `${align.includes("left") ? "left" : align.includes("right") ? "right" : "center"} ${align.includes("top") ? "top" : align.includes("bottom") ? "bottom" : "center"}`;
-
-function CroppedAssetImage({ asset, fit, crop, align, large }: { asset: Asset; fit: "contain" | "cover" | "fill"; crop: CropRect | null; align: Doc["align"]; large?: boolean }) {
+/**
+ * The visible part of a source, filling its box exactly. An element's box is
+ * its picture, so there is no object-fit to choose: Fit, Fill and Stretch
+ * decide the box, and the crop decides which part of the source fills it.
+ */
+function CroppedAssetImage({ asset, crop, large }: { asset: Asset; crop: CropRect | null; large?: boolean }) {
   const rect = crop ?? fullCrop();
   const width = rect.right - rect.left; const height = rect.bottom - rect.top;
-  return <div className="crop-viewport"><AssetImage asset={asset} fit={fit} large={large} style={{
+  return <div className="crop-viewport"><AssetImage asset={asset} fit="fill" large={large} style={{
     position: "absolute", width: `${100 / width}%`, height: `${100 / height}%`, maxWidth: "none",
     left: `${-rect.left / width * 100}%`, top: `${-rect.top / height * 100}%`,
-    objectPosition: objectPositionFor(align),
   }} /></div>;
 }
-
-const objectFitFor = (fit: Doc["fit"]) => (fit === "Fit" ? "contain" : fit === "Fill" ? "cover" : "fill");
 
 /* -------------------------------------------------------------------- import */
 
@@ -255,15 +260,15 @@ export function ImportScreen({ policy, onPolicy, onFiles, onFolders, onCloud, on
     <div className="import-card">
       <header className="import-intro">
         <h1>Start a resize batch</h1>
-        <p>Drop a folder of product shots in. Everything lands in the Gallery, where a
-          preset applies one set of rules to the whole batch.</p>
+        <p>Drop a folder of product shots in. Edit one image the way you want it, apply
+          that edit to all the others, then review and export.</p>
       </header>
 
       <button className={`drop-zone ${dragging ? "dragging" : ""}`} onClick={onFiles}>
         <span className="drop-icon"><FolderOpen aria-hidden="true" /><Upload aria-hidden="true" /></span>
         <strong>Drop images here</strong>
         <span>or browse your computer</span>
-        <span className="drop-formats">PNG · JPG · WEBP · TIFF</span>
+        <span className="drop-formats">PNG, JPG, WebP or TIFF</span>
       </button>
 
       <div className="import-actions">
@@ -284,9 +289,10 @@ export function ImportScreen({ policy, onPolicy, onFiles, onFolders, onCloud, on
         </Select>
       </label>
 
-      <ol className="import-steps">
-        {[["Select", "in the Gallery"], ["Resize", "with a preset"], ["Review", "what needs attention"], ["Export", "the batch"]]
-          .map(([step, hint], index) => <li key={step}><span>{index + 1}</span><strong>{step}</strong><em>{hint}</em></li>)}
+      {/* The order is the list's own; no numbered badges (a decorative index). */}
+      <ol className="import-steps" aria-label="How a batch goes">
+        {[["Edit one image", "on its page"], ["Apply to all", "sized on each product"], ["Review", "what needs attention"], ["Export", "the batch as a zip"]]
+          .map(([step, hint]) => <li key={step}><strong>{step}</strong><em>{hint}</em></li>)}
       </ol>
     </div>
   </div>;
@@ -408,9 +414,12 @@ export function Gallery({ assets, total, selected, counts, filter, zoom, needsAt
 
 /* -------------------------------------------------------------------- editor */
 
-export function ContextualToolbar({ mode, onMode, element, fit, onFit, onReplace, onElement, onCropStart, onCropDone, onCropCancel, onCropReset, onToggleGrid, grid, className = "" }: {
-  mode: EditorTool; onMode: (mode: EditorTool) => void; element: ImageElement; fit: Doc["fit"];
-  onFit: (fit: Doc["fit"]) => void; onReplace: () => void; onElement: (element: ImageElement) => void;
+export function ContextualToolbar({ mode, onMode, element, fit, onFit, onReset, onElement, onCropStart, onCropDone, onCropCancel, onCropReset, onToggleGrid, grid, className = "" }: {
+  mode: EditorTool; onMode: (mode: EditorTool) => void; element: ImageElement;
+  /** The page layout the image is in right now, or null once it has been sized by hand. */
+  fit: Doc["fit"] | null;
+  /** Lay the image out against the whole page: Fit, Fill or Stretch. */
+  onFit: (fit: Doc["fit"]) => void; onReset: () => void; onElement: (element: ImageElement) => void;
   onCropStart: () => void; onCropDone: () => void; onCropCancel: () => void; onCropReset: () => void;
   onToggleGrid: () => void; grid: boolean; className?: string;
 }) {
@@ -422,30 +431,48 @@ export function ContextualToolbar({ mode, onMode, element, fit, onFit, onReplace
     if (mode === "crop" && next !== "crop") onCropDone();
     onMode(next);
   };
+  const box = element.box;
+  const write = (next: Partial<ImageElement["box"]>) => onElement({ ...element, box: { ...box, ...next } });
+  /*
+   * Three groups, read left to right: what you are doing (the mode), how the
+   * picture sits on the page (Fit, Fill, Stretch), and small adjustments to it.
+   * Adjustments are icons with a name on hover and for screen readers: there
+   * are six of them, and as words they pushed the toolbar off the pane.
+   * "Replace" is gone - it opened the same file picker as Import images.
+   */
   return <div className={`contextual-toolbar ${className}`} role="toolbar" aria-label="Selected image actions">
     <div className="toolbar-segment" role="group" aria-label="Edit mode">
       <button className={mode === "image" ? "active" : ""} aria-pressed={mode === "image"} onClick={() => selectMode("image")}>Edit image</button>
-      <button onClick={onReplace}>Replace</button>
-      <button className={mode === "crop" ? "active" : ""} aria-pressed={mode === "crop"} onClick={enterCrop}>Crop</button>
+      <button className={mode === "crop" ? "active" : ""} aria-pressed={mode === "crop"} title="Crop - or double-click the image" onClick={enterCrop}>Crop</button>
       <button className={mode === "frame" ? "active" : ""} aria-pressed={mode === "frame"} title="Drag on the canvas to draw a frame" onClick={() => onMode(mode === "frame" ? "image" : "frame")}>Add frame</button>
       <button className={mode === "canvas" ? "active" : ""} aria-pressed={mode === "canvas"} onClick={() => selectMode("canvas")}>Canvas</button>
     </div>
-    {mode === "image" && <><div className="toolbar-segment" role="group" aria-label="Image fill mode">
-      {(["Fit", "Fill", "Stretch"] as const).map((next) => <button key={next} className={fit === next ? "active" : ""} aria-pressed={fit === next} onClick={() => onFit(next)}>{next}</button>)}
-    </div><div className="toolbar-segment" role="group" aria-label="Transform image">
-      <button aria-label="Scale image down" title="Scale down" onClick={() => onElement({ ...element, box: scaleBy(element.box, 1 / 1.12) })}>−</button><button aria-label="Scale image up" title="Scale up" onClick={() => onElement({ ...element, box: scaleBy(element.box, 1.12) })}>+</button>
-      <button onClick={() => onElement({ ...element, box: rotateTo(element.box, element.box.rotation - 15) })}>Rotate left</button><button onClick={() => onElement({ ...element, box: rotateTo(element.box, element.box.rotation + 15) })}>Rotate right</button>
-      <button aria-expanded={showMore} onClick={() => setShowMore((value) => !value)}>More</button>
-    </div>{showMore && <div className="toolbar-segment" role="group" aria-label="Advanced image actions">
-      <button aria-pressed={element.box.flipH} onClick={() => onElement({ ...element, box: { ...element.box, flipH: !element.box.flipH } })}>Flip H</button><button aria-pressed={element.box.flipV} onClick={() => onElement({ ...element, box: { ...element.box, flipV: !element.box.flipV } })}>Flip V</button>
-      <button aria-pressed={element.box.lockedRatio} onClick={() => onElement({ ...element, box: { ...element.box, lockedRatio: !element.box.lockedRatio } })}>Lock ratio</button><button onClick={() => onElement(fullPageImage())}>Reset</button>
+    {mode === "image" && <><div className="toolbar-segment" role="group" aria-label="Fit to page">
+      {(["Fit", "Fill", "Stretch"] as const).map((next) => <button key={next} className={fit === next ? "active" : ""} aria-pressed={fit === next}
+        title={next === "Fit" ? "Fit the whole image inside the page" : next === "Fill" ? "Cover the whole page" : "Stretch to exactly the page"}
+        onClick={() => onFit(next)}>{next}</button>)}
+    </div><div className="toolbar-segment icon-segment" role="group" aria-label="Adjust image">
+      <button aria-label="Scale down" title="Scale down" onClick={() => write(scaleBy(box, 1 / 1.12))}><Minus aria-hidden="true" /></button>
+      <button aria-label="Scale up" title="Scale up" onClick={() => write(scaleBy(box, 1.12))}><Plus aria-hidden="true" /></button>
+      <button aria-label="Rotate left 15°" title="Rotate left 15° (Shift-drag the handle to snap)" onClick={() => write(rotateTo(box, box.rotation - 15))}><RotateCcw aria-hidden="true" /></button>
+      <button aria-label="Rotate right 15°" title="Rotate right 15°" onClick={() => write(rotateTo(box, box.rotation + 15))}><RotateCw aria-hidden="true" /></button>
+      <button aria-label="Flip horizontally" title="Flip horizontally" aria-pressed={box.flipH} className={box.flipH ? "active" : ""} onClick={() => write({ flipH: !box.flipH })}><FlipHorizontal aria-hidden="true" /></button>
+      <button aria-label="Flip vertically" title="Flip vertically" aria-pressed={box.flipV} className={box.flipV ? "active" : ""} onClick={() => write({ flipV: !box.flipV })}><FlipVertical aria-hidden="true" /></button>
+      <button aria-expanded={showMore} aria-label="More image actions" title="More" onClick={() => setShowMore((value) => !value)}><Ellipsis aria-hidden="true" /></button>
+    </div>{showMore && <div className="toolbar-segment" role="group" aria-label="More image actions">
+      <button aria-pressed={box.lockedRatio} className={box.lockedRatio ? "active" : ""} title="Keep the picture's proportions while resizing; unlocked, the edges stretch instead of cropping" onClick={() => write({ lockedRatio: !box.lockedRatio })}>Lock ratio</button>
+      <button title="Back to the page's own layout: no crop, mirror or rotation" onClick={onReset}>Reset image</button>
     </div>}</>}
-    {mode === "crop" && <div className="toolbar-segment" role="group" aria-label="Crop actions"><button onClick={onCropReset}>Reset crop</button><button onClick={() => { onCropCancel(); onMode("image"); }}>Cancel</button><button onClick={() => { onCropDone(); onMode("image"); }}>Done</button></div>}
+    {mode === "crop" && <><div className="toolbar-segment" role="group" aria-label="Crop actions">
+      <button onClick={onCropReset}>Reset crop</button>
+      <button onClick={() => { onCropCancel(); onMode("image"); }}>Cancel</button>
+      <button className="active" onClick={() => { onCropDone(); onMode("image"); }}>Done</button>
+    </div><span className="toolbar-hint">Drag the image to move it under the crop · Enter to finish · Esc to cancel</span></>}
     {mode === "canvas" && <div className="toolbar-segment" role="group" aria-label="Canvas actions"><button aria-pressed={grid} onClick={onToggleGrid}>Grid</button></div>}
   </div>;
 }
 
-export function Editor({ asset, assets, selected, doc, viewport, onViewport, onViewSize = () => {}, multi = NO_MULTI, spacePan = false, compare, compareView, splitAt, overlay, guides, target, onElement, onElementAction, onElementStart, onElementEnd, onCropStart, onCropDone, onCropCancel, onCropReset, onSplit, onChoose, onImport, onDrop, onFit, onToggleGrid, onStep, focusMode = false, editMode = "image", cropActive = false,
+export function Editor({ asset, assets, selected, doc, viewport, onViewport, onViewSize = () => {}, multi = NO_MULTI, spacePan = false, compare, compareView, splitAt, overlay, guides, target, onElement, onElementAction, onElementStart, onElementEnd, onCropStart, onCropDone, onCropCancel, onCropReset, onSplit, onChoose, onImport, onDrop, onFit, onReset = () => {}, activeFit = null, onEditMode = () => {}, onToggleGrid, onStep, focusMode = false, editMode = "image", cropActive = false,
   canvasLayers, activeLayer = null, frameSelection = null, onFrameAdd = () => {}, onFrameWrite = () => {}, onFrameGestureStart = () => {},
   onFrameGestureEnd = () => {}, onFrameSelect = () => {}, onFrameContentEdit = () => {}, onFrameContentDone = () => {},
   onFrameContentCancel = () => {}, onFrameDelete = () => {}, onFrameRefit = () => {}, onFrameReset = () => {}, onFrameDetach = () => {},
@@ -454,8 +481,8 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
   /** Pan and zoom of the workspace. Never an element's own transform. */
   viewport: Viewport;
   onViewport: (viewport: Viewport) => void;
-  /** The measured pane, so the zoom controls outside the canvas can use it. */
-  onViewSize?: (size: { width: number; height: number }) => void;
+  /** The measured pane, so the zoom controls outside the canvas can use it, and the band at its top already covered. */
+  onViewSize?: (size: { width: number; height: number; top?: number }) => void;
   /**
    * The canvas selection and the commands that act on it. Optional because
    * every other surface that renders an Editor - focus mode, the smoke test -
@@ -467,6 +494,12 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
   compare: boolean; compareView: CompareView; splitAt: number; overlay: number; guides: Guides; target: Preset;
   onElement: (element: ImageElement) => void; onElementAction: (element: ImageElement) => void; onElementStart: () => void; onElementEnd: () => void; onCropStart: () => void; onCropDone: () => void; onCropCancel: () => void; onCropReset: () => void; onSplit: (value: number) => void; onChoose: (asset: Asset) => void;
   onImport: () => void; onDrop: (files: FileList, drop?: { frameId?: string; at?: { x: number; y: number } }) => void; onFit: (fit: Doc["fit"]) => void;
+  /** Back to the page's own layout. */
+  onReset?: () => void;
+  /** Focus mode keeps the tool in its parent; double-click asks it for Crop. */
+  onEditMode?: (mode: EditorTool) => void;
+  /** The page layout the selected image is in, if any, for the toolbar to light. */
+  activeFit?: Doc["fit"] | null;
   onToggleGrid: () => void; onStep: (delta: number) => void;
   focusMode?: boolean;
   editMode?: EditorTool;
@@ -501,6 +534,12 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
   const [normalMode, setNormalMode] = useState<EditorTool>("image");
   const activeMode = focusMode ? editMode : normalMode;
   const rulerTop = focusMode ? FOCUS_RULER_TOP : RULER_TOP;
+  /**
+   * The band at the top of the pane the floating toolbar covers. Fit and
+   * frame-the-selection centre below it; focus mode's toolbar sits outside the
+   * pane, so nothing is covered there.
+   */
+  const coveredTop = focusMode ? 0 : RULER_TOP;
   const canvasRef = useRef<HTMLDivElement>(null);
   const activeThumb = useRef<HTMLButtonElement>(null);
   const activeIndex = assets.findIndex((item) => item.id === asset.id);
@@ -527,11 +566,11 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
     const observer = new ResizeObserver(([entry]) => {
       const box = entry.contentRect;
       setViewSize({ width: box.width, height: box.height });
-      onViewSize({ width: box.width, height: box.height });
+      onViewSize({ width: box.width, height: box.height, top: coveredTop });
     });
     observer.observe(node);
     return () => observer.disconnect();
-  }, [onViewSize]);
+  }, [coveredTop, onViewSize]);
   /**
    * Fitting the page follows the pane until the user takes control of the
    * view. Fitting only on the first measurement leaves the page mis-framed
@@ -548,12 +587,12 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
     const placed = viewport.zoom > 0 && placedFor.current === pageKey;
     // The view is still ours as long as it is exactly where we last put it.
     if (placed && lastFit.current && !same(viewport, lastFit.current)) return;
-    const next = fitViewport({ width: doc.width, height: doc.height }, viewSize);
+    const next = fitViewport({ width: doc.width, height: doc.height }, { ...viewSize, top: coveredTop });
     if (placed && same(viewport, next)) return;
     placedFor.current = pageKey;
     lastFit.current = next;
     onViewport(next);
-  }, [viewSize, pageKey, viewport, doc.width, doc.height, onViewport]);
+  }, [viewSize, pageKey, viewport, doc.width, doc.height, onViewport, coveredTop]);
 
   // The wheel listener is attached once, so it reads the live viewport here
   // rather than closing over a stale one.
@@ -585,7 +624,9 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
   const imageDrag = useRef<{ x: number; y: number; element: ImageElement } | null>(null);
   const imageResize = useRef<{ handle: Handle; x: number; y: number; element: ImageElement } | null>(null);
   const imageRotate = useRef<{ angle: number; rotation: number; element: ImageElement } | null>(null);
-  const cropGesture = useRef<{ mode: "move" | Handle; x: number; y: number; crop: CropRect } | null>(null);
+  const cropGesture = useRef<{ mode: "move" | Handle | `scale-${Handle}`; x: number; y: number; crop: CropRect; source: ImageBox; element: ImageElement } | null>(null);
+  /** What a gesture is doing, in numbers, next to the pointer: position, size or angle. */
+  const [readout, setReadout] = useState<{ text: string; x: number; y: number } | null>(null);
   const [dropActive, setDropActive] = useState(false);
   const frameDrag = useRef<{ x: number; y: number; frame: FrameElement } | null>(null);
   const frameResize = useRef<{ handle: Handle; x: number; y: number; frame: FrameElement } | null>(null);
@@ -608,24 +649,47 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
 
   // The geometry being edited belongs to the selected layer, which may be a
   // second copy of the same file; the crop source still comes from the asset.
-  const element = activeLayer?.element ?? asset.element;
+  const element = activeLayer?.element ?? elementOf(asset, doc);
   const crop = element.crop ?? fullCrop();
   const frameWrites = useFrameWrites();
   const placeElement = (next: ImageElement) => frameWrites.schedule(() => onElement(next));
   /** A live write during a gesture; the committed ones go straight through. */
   const writeFrameLive = (next: FrameElement) => frameWrites.schedule(() => onFrameWrite(next, true));
+  /** Output pixels, the unit the inspector shows. */
+  const px = (percent: number, length: number) => Math.round(percent / 100 * length);
+  const sizeText = (box: ImageBox) => `${px(box.w, page.width)} × ${px(box.h, page.height)} px`;
+  const showReadout = (event: React.PointerEvent, text: string) => setReadout({ text, x: event.clientX, y: event.clientY });
+  /**
+   * Which gesture a handle makes. On a picture whose ratio is locked, the
+   * corners scale and the edges crop - the way Canva behaves. Shift on an edge
+   * stretches instead, and an unlocked picture stretches from its edges.
+   */
+  const edgeCrops = (handle: Handle, box: ImageBox, stretch: boolean) => handle.length === 1 && box.lockedRatio && !stretch;
   const handleImageResize = (event: React.PointerEvent) => {
     const state = imageResize.current;
     const span = state && gestureSpan(event, state);
     if (!state || !span) return;
     const target = snapHandle(span.now, state.handle, { layer: activeLayer?.key ?? assetKey(asset.id) });
-    placeElement({ ...state.element, box: resizeTo(
-      { box: state.element.box, handle: state.handle, pointer: span.start }, target, page, event.shiftKey) });
+    const next = edgeCrops(state.handle, state.element.box, event.shiftKey)
+      ? cropEdgeTo({ element: state.element, handle: state.handle }, target, page)
+      : { ...state.element, box: resizeTo(
+        { box: state.element.box, handle: state.handle, pointer: span.start }, target, page, event.shiftKey, event.altKey) };
+    placeElement(next);
+    showReadout(event, sizeText(next.box));
   };
   /** Arrow keys resize through the same function, from the handle's own point. */
   const keyResize = (element: ImageElement, handle: Handle, dx: number, dy: number, stretch: boolean) => {
     const from = handlePagePoint(element.box, page, handle);
-    return { ...element, box: resizeTo({ box: element.box, handle, pointer: from }, { x: from.x + dx, y: from.y + dy }, page, stretch) };
+    const to = { x: from.x + dx, y: from.y + dy };
+    return edgeCrops(handle, element.box, stretch)
+      ? cropEdgeTo({ element, handle }, to, page)
+      : { ...element, box: resizeTo({ box: element.box, handle, pointer: from }, to, page, stretch) };
+  };
+  /** Double-click a picture, or press Crop: the window stays, the picture can move under it. */
+  const enterCrop = () => {
+    if (!imageActive) return;
+    onCropStart();
+    if (focusMode) onEditMode("crop"); else setNormalMode("crop");
   };
   const angleToElementCentre = (event: React.PointerEvent, image: ImageElement) => {
     const rect = canvasRef.current?.getBoundingClientRect();
@@ -634,23 +698,41 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
     const y = rect.top + (image.box.y + image.box.h / 2) / 100 * rect.height;
     return Math.atan2(event.clientY - y, event.clientX - x) * 180 / Math.PI;
   };
-  const cropProps = (mode: "move" | Handle) => ({
-    onPointerDown: (event: React.PointerEvent) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); cropGesture.current = { mode, x: event.clientX, y: event.clientY, crop }; },
+  /**
+   * Crop mode, Canva's way round:
+   *   - dragging the picture (inside the window or on the faded part around
+   *     it) slides it under a window that stays where it is;
+   *   - the window's own handles resize the window over a picture that stays;
+   *   - the faded picture's corners scale the picture under the window.
+   * Every pointer is resolved through the whole-source box the gesture started
+   * from, so a rotated or mirrored picture crops along its own axes.
+   */
+  const cropProps = (mode: "move" | Handle | `scale-${Handle}`) => ({
+    onPointerDown: (event: React.PointerEvent) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); cropGesture.current = { mode, x: event.clientX, y: event.clientY, crop, source: cropSource, element }; },
     onPointerMove: (event: React.PointerEvent) => {
       const state = cropGesture.current;
       const span = state && gestureSpan(event, state);
       if (!state || !span) return;
-      // The crop window is drawn inside the element, so both ends of the drag
-      // go through the element's inverse: the crop then tracks the pointer on a
-      // rotated or mirrored image instead of sliding off at an angle.
-      const from = toLocal(element.box, page, span.start);
-      const to = toLocal(element.box, page, span.now);
+      if (state.mode === "move") {
+        placeElement(slideUnderWindow({ element: state.element, pointer: span.start }, span.now, page));
+        return;
+      }
+      if (state.mode.startsWith("scale-")) {
+        const handle = state.mode.slice(6) as Handle;
+        placeElement(scaleUnderWindow({ element: state.element, handle, pointer: span.start }, span.now, page));
+        return;
+      }
+      const from = toLocal(state.source, page, span.start);
+      const to = toLocal(state.source, page, span.now);
       if (!from || !to) return;
-      const dx = to.x - from.x; const dy = to.y - from.y;
-      const next = state.mode === "move" ? moveCrop(state.crop, dx, dy) : resizeCrop(state.crop, state.mode, dx, dy);
-      placeElement(cropImage(element, next));
+      const next = resizeCrop(state.crop, state.mode as Handle, to.x - from.x, to.y - from.y);
+      const kept = cropImage(element, next).crop;
+      const placed = { box: croppedBox(state.source, kept, page), crop: kept };
+      placeElement(placed);
+      showReadout(event, sizeText(placed.box));
     },
-    onPointerUp: () => { frameWrites.flush(); cropGesture.current = null; }, onPointerCancel: () => { frameWrites.flush(); cropGesture.current = null; },
+    onPointerUp: () => { frameWrites.flush(); cropGesture.current = null; setReadout(null); },
+    onPointerCancel: () => { frameWrites.flush(); cropGesture.current = null; setReadout(null); },
   });
 
   // One pre-transform pixel is one output pixel, so zoom is a true scale: at 1
@@ -667,12 +749,23 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
   const scrimStyle = { left: `${projected.x}px`, top: `${projected.y}px`, width: `${projected.w}px`, height: `${projected.h}px` };
 
   const imageStyle = boxStyle(element.box);
+  /**
+   * The product the editor found in the selected picture, drawn inside its box
+   * so the user can see what "the product's size" refers to before applying
+   * an edit to every other image. Nothing is drawn when the product was not
+   * found or fills the whole picture.
+   */
+  const selectedSource = assets.find((item) => item.id === (activeLayer?.assetId ?? asset.id)) ?? asset;
+  const productShare = selectedSource.subject && !isWhole(selectedSource.subject.rect)
+    ? subjectInBox(selectedSource.subject.rect, element.crop) : null;
+  /** The whole source, where it sits on the page: what the crop window moves over. */
+  const cropSource = uncroppedBox(element.box, element.crop, page);
 
   /* ---------------------------------------------------------------- frames */
 
   const frames = doc.frames;
   const layers: CanvasLayer[] = canvasLayers
-    ?? [{ key: assetKey(asset.id), assetId: asset.id, element: asset.element, placementId: null }];
+    ?? [{ key: assetKey(asset.id), assetId: asset.id, element: elementOf(asset, doc), placementId: null }];
   const assetOf = (layer: CanvasLayer) => assets.find((item) => item.id === layer.assetId) ?? asset;
   const framedAsset = (frame: FrameElement) => assets.find((item) => item.id === frame.imageId) ?? null;
   const selectedFrame = frames.find((frame) => frame.id === frameSelection?.id) ?? null;
@@ -904,7 +997,7 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
     return <div key={frame.id} className="frame-layer" style={boxStyle(frame.box)}>
       {inside && frame.content
         ? <div className="frame-content" style={boxStyle(frame.content.box)}>
-            <CroppedAssetImage asset={inside} fit="fill" crop={frame.content.crop} align={doc.align} large />
+            <CroppedAssetImage asset={inside} crop={frame.content.crop} large />
           </div>
         : <div className="frame-placeholder"><FileImage aria-hidden="true" /><span>Drop image here</span></div>}
     </div>;
@@ -959,7 +1052,7 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
           if (layer) return <div key={key}
             className={`page-render-image ${layer.key === activeLayer?.key && imageActive && needsLocator(assetOf(layer)) ? "needs-locator" : ""}`}
             style={boxStyle(layer.element.box)}>
-            <CroppedAssetImage asset={assetOf(layer)} fit={objectFitFor(doc.fit)} crop={layer.element.crop} align={doc.align} large />
+            <CroppedAssetImage asset={assetOf(layer)} crop={layer.element.crop} large />
           </div>;
           const frame = frameByKey.get(key);
           return frame ? frameLayer(frame) : null;
@@ -1106,7 +1199,7 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
           }}
           onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); contentDrag.current = { x: event.clientX, y: event.clientY, frame: selectedFrame }; }}
           onPointerMove={moveFrameGesture} onPointerUp={endContentGesture} onPointerCancel={endContentGesture}>
-          {framedAsset(selectedFrame) && <CroppedAssetImage asset={framedAsset(selectedFrame)!} fit="fill" crop={selectedFrame.content.crop} align={doc.align} large />}
+          {framedAsset(selectedFrame) && <CroppedAssetImage asset={framedAsset(selectedFrame)!} crop={selectedFrame.content.crop} large />}
           {HANDLES.map((handle) => <button key={handle} type="button" className={`frame-handle handle-${handle}`}
             style={{ cursor: handleCursor(handle, contentOrientation(selectedFrame)) }}
             aria-label={`Scale content from ${handle}`} title={`Scale content from ${handle}`}
@@ -1120,6 +1213,7 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
       <div className={`image-layer ${imageActive ? "image-editing" : ""}`} style={imageStyle} tabIndex={imageActive ? 0 : -1}
         role="group" aria-roledescription="movable image" aria-describedby={`image-instructions-${asset.id}`} aria-label={`Image ${asset.name}`}
         onKeyDown={(event) => { if (!imageActive) return; const directions = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" } as const; const direction = directions[event.key as keyof typeof directions]; if (direction) { event.preventDefault(); onElementStart(); placeElement(nudgeImage(element, direction, event.shiftKey ? 5 : 1)); onElementEnd(); } }}
+        onDoubleClick={(event) => { event.stopPropagation(); enterCrop(); }}
         onPointerDown={(event) => { if (!imageActive) return; event.stopPropagation(); if (pickObject(event, activeLayer?.key ?? assetKey(asset.id))) return; event.currentTarget.setPointerCapture(event.pointerId); onElementStart(); imageDrag.current = { x: event.clientX, y: event.clientY, element }; }}
         onPointerMove={(event) => {
           const state = imageDrag.current;
@@ -1127,10 +1221,12 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
           const span = gestureSpan(event, state);
           if (!span) return;
           const moved = dragTo({ box: state.element.box, pointer: span.start }, span.now);
-          placeElement({ ...state.element, box: applySnap(moved, { layer: activeLayer?.key ?? assetKey(asset.id) }) });
+          const snapped = applySnap(moved, { layer: activeLayer?.key ?? assetKey(asset.id) });
+          placeElement({ ...state.element, box: snapped });
+          showReadout(event, `X ${px(snapped.x, page.width)}  Y ${px(snapped.y, page.height)}`);
         }}
         onPointerUp={(event) => {
-          frameWrites.flush();
+          frameWrites.flush(); setReadout(null);
           const dragged = Boolean(imageDrag.current);
           imageDrag.current = null; clearSnap(); onElementEnd();
           if (!dragged) return;
@@ -1139,26 +1235,45 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
           const point = pagePoint(event);
           const hit = point ? frameAt(frames, point.x, point.y) : null;
           if (hit) onFrameAttach(hit.id, asset.id);
-        }} onPointerCancel={() => { frameWrites.flush(); imageDrag.current = null; clearSnap(); onElementEnd(); }}
+        }} onPointerCancel={() => { frameWrites.flush(); setReadout(null); imageDrag.current = null; clearSnap(); onElementEnd(); }}
         >
         <span className="layer-label">Image</span>
+        {imageActive && productShare && <div className="subject-outline" aria-hidden="true" style={{
+          left: `${productShare.left * 100}%`, top: `${productShare.top * 100}%`,
+          width: `${(productShare.right - productShare.left) * 100}%`, height: `${(productShare.bottom - productShare.top) * 100}%`,
+        }} />}
         {imageActive && HANDLES.map((handle) => <button key={handle} type="button"
           aria-label={`Resize image from ${handle}`} title={`Resize image from ${handle}`} className={`frame-handle image-handle handle-${handle}`}
           style={{ cursor: handleCursor(handle, element.box) }}
           onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onElementStart(); imageResize.current = { handle, x: event.clientX, y: event.clientY, element }; }}
-          onPointerMove={handleImageResize} onPointerUp={() => { frameWrites.flush(); imageResize.current = null; clearSnap(); onElementEnd(); }} onPointerCancel={() => { frameWrites.flush(); imageResize.current = null; clearSnap(); onElementEnd(); }}
+          onPointerMove={handleImageResize} onPointerUp={() => { frameWrites.flush(); setReadout(null); imageResize.current = null; clearSnap(); onElementEnd(); }} onPointerCancel={() => { frameWrites.flush(); setReadout(null); imageResize.current = null; clearSnap(); onElementEnd(); }}
           onKeyDown={(event) => { const amount = event.shiftKey ? 5 : 1; const dx = event.key === "ArrowLeft" ? -amount : event.key === "ArrowRight" ? amount : 0; const dy = event.key === "ArrowUp" ? -amount : event.key === "ArrowDown" ? amount : 0; if (dx || dy) { event.preventDefault(); onElementStart(); placeElement(keyResize(element, handle, dx, dy, event.shiftKey)); onElementEnd(); } }} />)}
         <button type="button" aria-label={`Rotate image, ${Math.round(element.box.rotation)} degrees`} title="Rotate image" className="rotation-handle"
           onPointerDown={(event) => { event.stopPropagation(); event.currentTarget.setPointerCapture(event.pointerId); onElementStart(); imageRotate.current = { angle: angleToElementCentre(event, element), rotation: element.box.rotation, element }; }}
-          onPointerMove={(event) => { const state = imageRotate.current; if (!state) return; const next = state.rotation + angleToElementCentre(event, state.element) - state.angle; placeElement({ ...state.element, box: rotateTo(state.element.box, next, event.shiftKey ? 15 : 0) }); }}
-          onPointerUp={() => { frameWrites.flush(); imageRotate.current = null; onElementEnd(); }} onPointerCancel={() => { frameWrites.flush(); imageRotate.current = null; onElementEnd(); }}
+          onPointerMove={(event) => { const state = imageRotate.current; if (!state) return; const next = state.rotation + angleToElementCentre(event, state.element) - state.angle; const turned = rotateTo(state.element.box, next, event.shiftKey ? 15 : 0); placeElement({ ...state.element, box: turned }); showReadout(event, `${Math.round(turned.rotation)}°`); }}
+          onPointerUp={() => { frameWrites.flush(); setReadout(null); imageRotate.current = null; onElementEnd(); }} onPointerCancel={() => { frameWrites.flush(); setReadout(null); imageRotate.current = null; onElementEnd(); }}
           onKeyDown={(event) => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); onElementStart(); placeElement({ ...element, box: rotateTo(element.box, element.box.rotation + (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 15 : 1)) }); onElementEnd(); } }} />
       </div>
-      {activeMode === "crop" && <div className="crop-overlay" style={imageStyle}>
+      {activeMode === "crop" && <div className="crop-overlay" style={boxStyle(cropSource)} {...cropProps("move")}>
+        <div className="crop-source" aria-hidden="true"><AssetImage asset={asset} fit="fill" large /></div>
+        {(["nw", "ne", "se", "sw"] as const).map((corner) => <button key={corner} type="button"
+          className={`frame-handle crop-source-handle handle-${corner}`} style={{ cursor: handleCursor(corner, cropSource) }}
+          aria-label={`Scale image from ${corner}`} title="Scale the image under the crop" {...cropProps(`scale-${corner}`)} />)}
         <div className="crop-shade" aria-hidden="true" style={{ clipPath: `polygon(0% 0%, 0% 100%, ${crop.left * 100}% 100%, ${crop.left * 100}% ${crop.top * 100}%, ${crop.right * 100}% ${crop.top * 100}%, ${crop.right * 100}% ${crop.bottom * 100}%, ${crop.left * 100}% ${crop.bottom * 100}%, ${crop.left * 100}% 100%, 100% 100%, 100% 0%)` }} />
         <div className="crop-window" tabIndex={0} style={{ left: `${crop.left * 100}%`, top: `${crop.top * 100}%`, width: `${(crop.right - crop.left) * 100}%`, height: `${(crop.bottom - crop.top) * 100}%` }}
-          aria-label="Crop image. Drag to position the source crop; use handles to resize."
-          onKeyDown={(event) => { const directions = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" } as const; const direction = directions[event.key as keyof typeof directions]; if (direction) { event.preventDefault(); const amount = event.shiftKey ? .05 : .01; placeElement(cropImage(element, moveCrop(crop, direction === "left" ? -amount : direction === "right" ? amount : 0, direction === "up" ? -amount : direction === "down" ? amount : 0))); } }}
+          aria-label="Crop image. Drag to move the picture under the crop; use the handles to resize the crop; Enter to finish."
+          onKeyDown={(event) => {
+            // Arrows move the picture under the window, like a drag: left
+            // brings more of the picture's right side into view.
+            if (event.key === "Enter") { event.preventDefault(); onCropDone(); if (!focusMode) setNormalMode("image"); return; }
+            const directions = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" } as const;
+            const direction = directions[event.key as keyof typeof directions];
+            if (!direction) return;
+            event.preventDefault();
+            const amount = event.shiftKey ? .05 : .01;
+            const moved = moveCrop(crop, direction === "left" ? amount : direction === "right" ? -amount : 0, direction === "up" ? amount : direction === "down" ? -amount : 0);
+            placeElement({ box: element.box, crop: element.crop ? moved : null });
+          }}
           {...cropProps("move")}>
           <div className="frame-outline" aria-hidden="true" />
           {HANDLES.map((handle) => <button key={handle} type="button" aria-label={`Resize crop from ${handle}`} title={`Resize crop from ${handle}`}
@@ -1212,10 +1327,10 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
         {grouped
           ? <SelectionToolbar count={selectedItems.length} canDistribute={selectedItems.length > 2}
               onAlign={multi.onAlign} onDistribute={multi.onDistribute} />
-          : assets.length > 0 && <ContextualToolbar mode={normalMode} onMode={setNormalMode} element={element} fit={doc.fit} onFit={onFit} onReplace={onImport} onElement={onElementAction}
+          : assets.length > 0 && <ContextualToolbar mode={normalMode} onMode={setNormalMode} element={element} fit={activeFit} onFit={onFit} onReset={onReset} onElement={onElementAction}
               onCropStart={onCropStart} onCropDone={onCropDone} onCropCancel={onCropCancel} onCropReset={onCropReset} onToggleGrid={onToggleGrid} grid={guides.grid} />}
-        <Button size="sm" variant="secondary" onClick={onImport}><Upload /> Import images</Button>
-        <span className="editor-toolbar-note">{assets.length ? `${assets.length} image${assets.length === 1 ? "" : "s"}` : "Empty canvas — import when ready"}</span>
+        <Button size="sm" variant="secondary" onClick={onImport} aria-label="Import images" title="Import images"><Upload /><span className="import-label">Import images</span></Button>
+        <span className="editor-toolbar-note">{assets.length ? `${assets.length} image${assets.length === 1 ? "" : "s"}` : "Empty canvas. Import when ready"}</span>
       </div>}
       {dropActive && <div className="editor-drop-overlay" role="status"><Upload /><strong>Drop images onto the canvas</strong><span>They will be placed as editable image layers</span></div>}
       {/* Rulers described the old fixed canvas and cannot describe a panned
@@ -1314,6 +1429,7 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
         {comparison}
       </div>
     </div>
+    {readout && <div className="gesture-readout" role="status" aria-live="off" style={{ left: readout.x + 16, top: readout.y + 18 }}>{readout.text}</div>}
     {!focusMode && <div className="filmstrip">
       <div className="strip-nav">
         <button aria-label="Previous image" onClick={() => onStep(-1)}><ChevronLeft /></button>
@@ -1325,7 +1441,7 @@ export function Editor({ asset, assets, selected, doc, viewport, onViewport, onV
         const active = item.id === asset.id;
         return <button key={item.id} ref={active ? activeThumb : undefined} className={active ? "active" : ""}
           aria-current={active ? "true" : undefined}
-          title={`${item.name} — ${status}`} aria-label={`${item.name}, ${status}`}
+          title={`${item.name}, ${status}`} aria-label={`${item.name}, ${status}`}
           onClick={() => onChoose(item)}>
           <AssetImage asset={item} fit="cover" />
           <span className={`strip-dot dot-${status.toLowerCase()}`} aria-hidden="true" />
@@ -1350,8 +1466,8 @@ export function Review({ assets, target, onOpen, onFix, onFixAll, onRetry }: {
         <p>Resolve exceptions before export. Target {target.label} · {target.width} × {target.height} px.</p>
       </div>
       <div className="review-heading-actions">
-        <Button variant="outline" onClick={onRetry}>Re-run preset</Button>
-        <Button disabled={!fixable.length} onClick={onFixAll}><Zap /> Auto-fix scaling ({fixable.length})</Button>
+        <Button variant="outline" onClick={onRetry}>Re-apply edit</Button>
+        <Button disabled={!fixable.length} onClick={onFixAll}><Zap /> Fix all ({fixable.length})</Button>
       </div>
     </div>
     <div className="review-grid">{assets.map((asset) => {
@@ -1362,27 +1478,29 @@ export function Review({ assets, target, onOpen, onFix, onFixAll, onRetry }: {
             <AssetImage asset={asset} fit="cover" />
             <StatusBadge status={statusOf(asset, target)} />
             <strong>{asset.name}</strong>
+            <span className="review-reason">{reason === "corrupt" ? "Cannot be decoded" : reason === "clipping" ? "Cut off by the page" : "Enlarged past its pixels"}</span>
             <span>{metaLine(asset)}</span>
           </article>
         </PopoverTrigger>
         {/* Panel 2: the diagnostic explains itself and fixes itself. */}
         <PopoverContent className="diagnostic" align="start">
-          <strong>{reason === "corrupt" ? "Error: corrupted file" : reason === "safe" ? "Warning: safe-area overflow" : "Warning: aspect ratio mismatch"}</strong>
+          <strong>{reason === "corrupt" ? "Error: corrupted file" : reason === "clipping" ? "Warning: cut off by the page" : "Warning: enlarged past its pixels"}</strong>
           {reason === "corrupt"
-            ? <p>The file cannot be decoded, so the resize engine never receives pixel data. It stays in the export queue and fails there — remove it or replace the source.</p>
-            : reason === "safe"
-              ? <p>Fill and Stretch push content past the safe margins this preset requires. Auto-fix pads the canvas so the product sits back inside the safe area.</p>
+            ? <p>The file cannot be decoded, so the resize engine never receives pixel data. It stays in the export queue and fails there. Remove it or replace the source.</p>
+            : reason === "clipping"
+              ? <p>Part of the picture sits outside the page, so the export cuts it off. Fix lays it out to fit the page again, keeping its crop and mirror.</p>
               : <>
-                  <p>The source ratio does not match the target canvas, so the engine has to choose between cropping and padding. Auto-fix pads to the target ratio without scaling the product.</p>
+                  <p>The picture is drawn larger than its own pixels, so the export will look soft. Fix shrinks it about its centre to 100% of its source.</p>
                   <dl className="diagnostic-rows">
-                    <div><dt>Target</dt><dd>{ratioLabel(target.width, target.height)}</dd></div>
-                    <div><dt>Current</dt><dd>{ratioLabel(asset.src.w, asset.src.h)}</dd></div>
+                    <div><dt>Page</dt><dd>{target.width} × {target.height} px</dd></div>
+                    <div><dt>Source</dt><dd>{asset.src.w} × {asset.src.h} px</dd></div>
+                    <div><dt>Ratio</dt><dd>{ratioLabel(asset.src.w, asset.src.h)}</dd></div>
                     <div><dt>Resolution</dt><dd>{resolutionOf(asset)}</dd></div>
                   </dl>
                 </>}
           <div className="diagnostic-actions">
             <Button size="sm" variant="outline" onClick={() => onOpen(asset)}>Open in editor</Button>
-            <Button size="sm" disabled={asset.corrupt} onClick={() => onFix(asset.id)}><Zap /> Auto-fix (crop / pad)</Button>
+            <Button size="sm" disabled={asset.corrupt} onClick={() => onFix(asset.id)}><Zap /> {reason === "clipping" ? "Fit to page" : "Shrink to 100%"}</Button>
           </div>
         </PopoverContent>
       </Popover>;

@@ -13,11 +13,11 @@
 import { begin } from "@/src/selfcheck";
 import { downloadZip, makeZip, type OutFormat, type ZipEntry } from "@/src/batch";
 import {
-  assetKey, docFromPreset, frameKey, orderStack, outputName, placementKey, presetById,
+  assetKey, docFromPreset, elementOf, frameKey, orderStack, outputName, placementKey, presetById,
   type Asset, type Doc, type Format,
 } from "@/src/flow";
-import { fullCrop, fullPageImage, type ImageBox, type ImageElement } from "@/src/image-geometry";
-import { compose, identity, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
+import { fitInto, fullCrop, fullPageImage, type ImageBox, type ImageElement } from "@/src/image-geometry";
+import { applyPoint, compose, fromBox, identity, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
 import { attachImage, contentPageElement, createFrame } from "@/src/frame-geometry";
 import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
@@ -29,8 +29,11 @@ export type FrameSpec = {
   width: number;
   height: number;
   background: string;
-  fit: "contain" | "cover" | "fill";
-  align: { horizontal: "left" | "center" | "right"; vertical: "top" | "center" | "bottom" };
+  /**
+   * The subject's own geometry. Its box is the picture: every image is drawn
+   * to fill its box, because Fit, Fill and Stretch now decide the box rather
+   * than how the picture sits inside one.
+   */
   element: ImageElement;
   /** The page's layer stack, bottom to top, including the queued image. */
   layers: Layer[];
@@ -51,12 +54,6 @@ export type Layer = {
   element: ImageElement;
   file: File;
   clip?: ImageBox;
-  /**
-   * How the source maps into the element box. Frame content is always "fill":
-   * `contentFor` already sized the box to the source's ratio, which is what the
-   * preview draws. Free images follow the page's own fit setting.
-   */
-  fit?: FrameSpec["fit"];
 };
 
 /**
@@ -88,7 +85,7 @@ export function pageLayers(doc: Doc, assets: Asset[], subject?: string): Layer[]
   const inFrames = frames.flatMap((frame) => {
     const asset = byId.get(frame.imageId ?? -1);
     return asset?.file && !asset.corrupt && frame.content
-      ? [{ key: frameKey(frame.id), assetId: asset.id, layer: { assetId: asset.id, element: contentPageElement(frame), file: asset.file, clip: frame.box, fit: "fill" as const } }]
+      ? [{ key: frameKey(frame.id), assetId: asset.id, layer: { assetId: asset.id, element: contentPageElement(frame), file: asset.file, clip: frame.box } }]
       : [];
   });
   const all = [...free, ...inFrames];
@@ -136,7 +133,8 @@ export function exportUnits(doc: Doc, assets: Asset[]): ExportUnit[] {
   }
   for (const asset of assets) {
     if (!usable(asset) || placed.has(asset.id)) continue;
-    units.push({ key: assetKey(asset.id), asset, element: asset.element, layers: [] });
+    // Never placed by hand: the page lays it out, the same way the editor does.
+    units.push({ key: assetKey(asset.id), asset, element: elementOf(asset, doc), layers: [] });
   }
   // Each file has its own layer list, because each hides a different copy.
   return units.map((unit) => ({ ...unit, layers: pageLayers(doc, assets, unit.key) }));
@@ -146,11 +144,6 @@ export const specFromDoc = (doc: Doc, assets: Asset[] = []): FrameSpec => ({
   width: doc.width,
   height: doc.height,
   background: doc.background,
-  fit: doc.fit === "Fit" ? "contain" : doc.fit === "Fill" ? "cover" : "fill",
-  align: {
-    horizontal: doc.align?.includes("left") ? "left" : doc.align?.includes("right") ? "right" : "center",
-    vertical: doc.align?.includes("top") ? "top" : doc.align?.includes("bottom") ? "bottom" : "center",
-  },
   element: fullPageImage(),
   layers: pageLayers(doc, assets),
 });
@@ -183,10 +176,13 @@ export function elementTransform(box: ImageBox, page: { width: number; height: n
   if (!box.flipH && !box.flipV && !box.rotation) return identity();
   const cx = (box.x + box.w / 2) / 100 * page.width;
   const cy = (box.y + box.h / 2) / 100 * page.height;
+  // Read right to left: mirror first, then rotate - the order CSS
+  // `rotate() scale()` and `fromBox` use. The other order turns a mirrored
+  // image the opposite way in the file from the way it turns on screen.
   return compose(
     translation(cx, cy),
-    scaling(box.flipH ? -1 : 1, box.flipV ? -1 : 1),
     rotation(box.rotation),
+    scaling(box.flipH ? -1 : 1, box.flipV ? -1 : 1),
     translation(-cx, -cy),
   );
 }
@@ -197,23 +193,8 @@ function transformAboutCentre(context: CanvasRenderingContext2D, box: ImageBox, 
   context.transform(matrix.a, matrix.b, matrix.c, matrix.d, matrix.tx, matrix.ty);
 }
 
-/**
- * Where the image lands inside the frame. This mirrors object-fit, which is
- * what the editor canvas previews it with, so the file matches the screen:
- * contain fits it whole, cover fills and overflows (the frame clips it), fill
- * distorts it to the frame.
- */
-export function fitInto(srcW: number, srcH: number, frame: Rect, fit: FrameSpec["fit"], align: FrameSpec["align"] = { horizontal: "center", vertical: "center" }): Rect {
-  if (fit === "fill" || srcW <= 0 || srcH <= 0) return { ...frame };
-  const scale = fit === "cover"
-    ? Math.max(frame.w / srcW, frame.h / srcH)
-    : Math.min(frame.w / srcW, frame.h / srcH);
-  const w = srcW * scale;
-  const h = srcH * scale;
-  const x = align.horizontal === "left" ? frame.x : align.horizontal === "right" ? frame.x + frame.w - w : frame.x + (frame.w - w) / 2;
-  const y = align.vertical === "top" ? frame.y : align.vertical === "bottom" ? frame.y + frame.h - h : frame.y + (frame.h - h) / 2;
-  return { x, y, w, h };
-}
+/** Moved to image-geometry with the rest of the layout maths; re-exported for existing callers. */
+export { fitInto };
 
 /** An export's file extension, which TIFF cannot be: canvas cannot encode it. */
 export const encodableFormat = (format: Format): OutFormat =>
@@ -305,7 +286,7 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
           context.clip();
           context.setTransform(1, 0, 0, 1, 0, 0);
         }
-        drawLayer(context, source, layerContext, spec, layer.element, layer.fit);
+        drawLayer(context, source, layerContext, spec, layer.element);
         context.restore();
       } finally {
         if (!queued) source.close?.();
@@ -329,16 +310,15 @@ function drawLayer(
   sourceContext: CanvasRenderingContext2D,
   spec: FrameSpec,
   element: ImageElement,
-  fit: FrameSpec["fit"] = spec.fit,
 ) {
   context.save();
   transformAboutCentre(context, element.box, spec);
   const crop = element.crop ?? fullCrop();
   const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
   const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
-  // This is the same object-fit calculation as the preview: fit the cropped
-  // source into the element box, then let the page or frame clip the result.
-  const dest = fitInto(sourceWidth, sourceHeight, boxPx(element.box, spec), fit, spec.align);
+  // The box is the picture: the cropped source fills it exactly, which is what
+  // the preview draws, and the page or frame clips whatever overflows.
+  const dest = boxPx(element.box, spec);
   const renderWidth = Math.max(1, Math.round(dest.w));
   const renderHeight = Math.max(1, Math.round(dest.h));
   validateDimensions(renderWidth, renderHeight);
@@ -437,7 +417,6 @@ export function demo() {
   const finish = begin();
   const spec: FrameSpec = {
     width: 1000, height: 2000, background: "#fff",
-    fit: "contain", align: { horizontal: "center", vertical: "center" },
     element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 10, y: 20, w: 80, h: 60 } },
     layers: [],
   };
@@ -484,9 +463,11 @@ export function demo() {
   // source ratio: drawing it with anything but fill would letterbox it twice.
   const fitPage = { ...docFromPreset(presetById("amazon")), frames: [testFrame] };
   const withFile = pageLayers(fitPage, [{ id: 1, file: {} as File, element: fullPageImage(), src: { w: 100, h: 100 } } as Asset]);
-  console.assert(withFile.length === 1 && withFile[0].fit === "fill", "frame content exports with fill, whatever the page fit is");
-  console.assert(fitInto(100, 100, boxPx(contentPageElement(testFrame).box, framedPage), withFile[0].fit!).w === 500,
-    "so the content fills its box instead of shrinking inside it");
+  // Every layer fills its box - frame content was sized to its source by
+  // contentFor, and a free image's box is its picture - so a Fit page cannot
+  // letterbox the content a second time.
+  console.assert(withFile.length === 1 && boxPx(withFile[0].element.box, framedPage).w === 500,
+    "frame content exports at the size of its own box, whatever the page fit is");
 
   // Layer order is the page's order: free images as they are listed, frames on
   // top, and the image being exported is simply one of them. A free image is
@@ -530,6 +511,18 @@ export function demo() {
     "and turns the element about its own centre, which therefore does not move");
   const mirrored = elementTransform({ ...flat, flipH: true }, framedPage);
   console.assert(mirrored.a === -1 && mirrored.d === 1, "a horizontal mirror reaches the file as one");
+  // Mirrored *and* turned: the file has to turn the way the screen does. The
+  // screen is `fromBox` (CSS rotate() scale()), which mirrors first and then
+  // rotates; a corner of the element must land on the same page pixel both ways.
+  const both = { ...flat, flipH: true, rotation: 30 };
+  const square1000 = { width: 1000, height: 1000 };
+  const unrotated = boxPx(both, square1000);
+  // The source's top-right corner: (1, 0) in the element's unit square on
+  // screen, and the drawn bitmap's top-right pixel in the file.
+  const screen = applyPoint(fromBox({ ...both, ...unrotated }), { x: 1, y: 0 });
+  const file = applyPoint(elementTransform(both, square1000), { x: unrotated.x + unrotated.w, y: unrotated.y });
+  console.assert(Math.abs(screen.x - file.x) < 1e-9 && Math.abs(screen.y - file.y) < 1e-9,
+    "a mirrored, rotated element exports turned the same way the editor shows it");
 
   /* ------------------------------------------------ the stack reaches the file
 
@@ -599,9 +592,12 @@ export function demo() {
   console.assert(pair[0].layers.length === 1 && pair[1].layers.length === 1,
     "each of the two draws one copy, so the two files differ");
 
-  console.assert(specFromDoc({ fit: "Fill" } as Doc).fit === "cover", "Fill maps to cover");
-  console.assert(specFromDoc({ fit: "Fit" } as Doc).fit === "contain", "Fit maps to contain");
-  console.assert(specFromDoc({ fit: "Stretch" } as Doc).fit === "fill", "Stretch maps to fill");
+  // An image nobody has placed by hand is laid out by the page, so it follows
+  // the page when the page changes - the export reads the same layout.
+  const untouched = { ...spare, element: null, src: { w: 1600, h: 1000 } } as Asset;
+  const onAmazon = exportUnits({ ...fitPage, placements: [], frames: [] }, [untouched])[0].element.box;
+  console.assert(Math.abs(onAmazon.w - 100) < 1e-9 && Math.abs(onAmazon.h - 62.5) < 1e-9 && Math.abs(onAmazon.y - 18.75) < 1e-9,
+    "an untouched wide image is fitted to the page and centred");
 
   finish("exportrun.ts");
 }

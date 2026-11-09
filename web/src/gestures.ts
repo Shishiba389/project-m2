@@ -25,7 +25,7 @@
  * function converts to page pixels, works there, and converts back.
  */
 import { applyPoint, applyVector, compose, fromBox, invert, rotation, scaling, type Mat3, type Point } from "@/src/mat3";
-import type { ImageBox, ResizeHandle } from "@/src/image-geometry";
+import { cropImage, fullCrop, type CropRect, type ImageBox, type ImageElement, type ResizeHandle } from "@/src/image-geometry";
 
 export type Size = { width: number; height: number };
 /** Everything a gesture needs to remember from the moment the pointer went down. */
@@ -126,11 +126,13 @@ export const dragTo = (start: Gesture, pointer: Point): ImageBox => ({
  * handle whose axis does not move — `e` has no vertical component — reports a
  * factor of 1 on that axis and leaves it alone.
  */
-export function resizeTo(start: Gesture & { handle: ResizeHandle }, pointer: Point, page: Size, stretch = false): ImageBox {
+export function resizeTo(start: Gesture & { handle: ResizeHandle }, pointer: Point, page: Size, stretch = false, fromCentre = false): ImageBox {
   const local = toLocal(start.box, page, pointer);
   if (!local) return start.box;
   const handle = handlePoint(start.handle);
-  const anchor = { x: 1 - handle.x, y: 1 - handle.y };
+  // Alt resizes about the centre: the anchor is the middle of the object
+  // rather than the opposite handle, so both sides move together.
+  const anchor = fromCentre ? { x: 0.5, y: 0.5 } : { x: 1 - handle.x, y: 1 - handle.y };
   const movesX = handle.x !== anchor.x;
   const movesY = handle.y !== anchor.y;
   let scaleX = movesX ? (local.x - anchor.x) / (handle.x - anchor.x) : 1;
@@ -203,12 +205,173 @@ export const centreOf = (box: ImageBox): Point => ({ x: box.x + box.w / 2, y: bo
  * barely moved a large one.
  */
 export function scaleBy(box: ImageBox, factor: number): ImageBox {
-  const width = Math.max(1, box.w * factor);
-  const height = Math.max(1, box.h * factor);
+  // One floor for both axes: clamping them separately squashes a thin banner
+  // the moment its short side reaches the minimum.
+  const shortest = Math.min(box.w, box.h);
+  const floor = shortest > 0 ? Math.min(1, MIN_PERCENT / shortest) : 1;
+  const uniform = Math.max(factor, floor);
+  const width = box.w * uniform;
+  const height = box.h * uniform;
   return {
     ...box,
     x: box.x + (box.w - width) / 2,
     y: box.y + (box.h - height) / 2,
     w: width, h: height,
   };
+}
+
+/* ------------------------------------------------------------------- crop
+
+   A cropped element shows part of its source, and its box is that part.
+   Cropping therefore moves the box: shrinking the crop window shrinks the box
+   around content that stays exactly where it was on the page, which is what
+   Canva does and what the old "stretch the crop back over the old box" did
+   not.  Both directions go through the box's own matrix, in pixels, so a
+   rotated or mirrored element crops along its own axes. */
+
+/** The page box the whole, uncropped source occupies, given the visible box. */
+export function uncroppedBox(box: ImageBox, crop: CropRect | null, page: Size): ImageBox {
+  const window = crop ?? fullCrop();
+  const spanX = window.right - window.left;
+  const spanY = window.bottom - window.top;
+  if (spanX <= 0 || spanY <= 0) return box;
+  const pixels = toPixels(box, page);
+  const width = pixels.w / spanX;
+  const height = pixels.h / spanY;
+  // The source's centre, in the visible box's unit square.
+  const centre = applyPoint(fromBox(pixels), { x: (0.5 - window.left) / spanX, y: (0.5 - window.top) / spanY });
+  return { ...box, ...toPercent({ x: centre.x - width / 2, y: centre.y - height / 2, w: width, h: height }, page) };
+}
+
+/** The visible box: the part of `source` (the whole-source box) that `crop` keeps. */
+export function croppedBox(source: ImageBox, crop: CropRect | null, page: Size): ImageBox {
+  const window = crop ?? fullCrop();
+  const pixels = toPixels(source, page);
+  const width = pixels.w * (window.right - window.left);
+  const height = pixels.h * (window.bottom - window.top);
+  const centre = applyPoint(fromBox(pixels), { x: (window.left + window.right) / 2, y: (window.top + window.bottom) / 2 });
+  return { ...source, ...toPercent({ x: centre.x - width / 2, y: centre.y - height / 2, w: width, h: height }, page) };
+}
+
+/** Change an element's crop and move its box with it, so nothing on the page shifts. */
+export function recrop(element: ImageElement, crop: CropRect | null, page: Size): ImageElement {
+  const source = uncroppedBox(element.box, element.crop, page);
+  const next = crop ? cropImage(element, crop).crop : null;
+  return { box: croppedBox(source, next, page), crop: next };
+}
+
+/* -------------------------------------------------------------- page size */
+
+/**
+ * A box carried onto a page of another size.
+ *
+ * Boxes are stored in page percent, so a page that changes shape would
+ * otherwise stretch every image on it. The centre keeps its place in percent -
+ * an image in the bottom-left corner stays there - and the size scales by the
+ * factor that fits the old page inside the new one, so the picture keeps its
+ * pixel aspect and what fitted the old page fits the new one.
+ */
+export function rescaleBox(box: ImageBox, from: Size, to: Size): ImageBox {
+  if (from.width <= 0 || from.height <= 0 || to.width <= 0 || to.height <= 0) return box;
+  const scale = Math.min(to.width / from.width, to.height / from.height);
+  const w = box.w / 100 * from.width * scale / to.width * 100;
+  const h = box.h / 100 * from.height * scale / to.height * 100;
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return { ...box, x: cx - w / 2, y: cy - h / 2, w, h };
+}
+
+/* ------------------------------------------------- Canva-style cropping
+
+   On a picture, the corners scale and the edges crop: dragging the east edge
+   in moves the right side of the crop window, the box shrinks with it, and
+   the content stays exactly where it is. It cannot be dragged past the edge
+   of the source - there is nothing there to show.
+
+   Inside crop mode the window stays put and the picture moves: dragging slides
+   the source under the window, and the source's own corners scale it. Both
+   keep the window inside the source, so the box never shows an empty edge. */
+
+const MIN_CROP = 0.05;
+
+/** Drag one edge handle of a picture: crop on that side, nothing else moves. */
+export function cropEdgeTo(start: { element: ImageElement; handle: ResizeHandle }, pointer: Point, page: Size): ImageElement {
+  const crop = start.element.crop ?? fullCrop();
+  const source = uncroppedBox(start.element.box, start.element.crop, page);
+  const local = toLocal(source, page, pointer);
+  if (!local) return start.element;
+  const next = { ...crop };
+  if (start.handle.includes("e")) next.right = Math.min(1, Math.max(crop.left + MIN_CROP, local.x));
+  if (start.handle.includes("w")) next.left = Math.max(0, Math.min(crop.right - MIN_CROP, local.x));
+  if (start.handle.includes("s")) next.bottom = Math.min(1, Math.max(crop.top + MIN_CROP, local.y));
+  if (start.handle.includes("n")) next.top = Math.max(0, Math.min(crop.bottom - MIN_CROP, local.y));
+  const whole = next.left <= 0 && next.top <= 0 && next.right >= 1 && next.bottom >= 1;
+  const kept = whole ? null : next;
+  return { box: croppedBox(source, kept, page), crop: kept };
+}
+
+/** Where a window box falls inside a source box, as crop fractions of that source. */
+export function cropFromWindow(window: ImageBox, source: ImageBox, page: Size): CropRect | null {
+  const corners = [{ x: 0, y: 0 }, { x: 1, y: 1 }].map((point) => {
+    const onPage = applyPoint(fromBox(toPixels(window, page)), point);
+    return toLocal(source, page, { x: onPage.x / page.width * 100, y: onPage.y / page.height * 100 });
+  });
+  if (!corners[0] || !corners[1]) return null;
+  return {
+    left: Math.min(corners[0].x, corners[1].x), right: Math.max(corners[0].x, corners[1].x),
+    top: Math.min(corners[0].y, corners[1].y), bottom: Math.max(corners[0].y, corners[1].y),
+  };
+}
+
+const EDGE_TOLERANCE = 1e-9;
+const inside = (crop: CropRect) => crop.left >= -EDGE_TOLERANCE && crop.top >= -EDGE_TOLERANCE
+  && crop.right <= 1 + EDGE_TOLERANCE && crop.bottom <= 1 + EDGE_TOLERANCE;
+const tidyCrop = (crop: CropRect): CropRect | null => {
+  const clamped = {
+    left: Math.max(0, crop.left), top: Math.max(0, crop.top),
+    right: Math.min(1, crop.right), bottom: Math.min(1, crop.bottom),
+  };
+  return clamped.left <= 1e-9 && clamped.top <= 1e-9 && clamped.right >= 1 - 1e-9 && clamped.bottom >= 1 - 1e-9 ? null : clamped;
+};
+
+/** Slide the picture under a fixed crop window. The window - the box - does not move. */
+export function slideUnderWindow(start: { element: ImageElement; pointer: Point }, pointer: Point, page: Size): ImageElement {
+  const crop = start.element.crop ?? fullCrop();
+  const source = uncroppedBox(start.element.box, start.element.crop, page);
+  const from = toLocal(source, page, start.pointer);
+  const to = toLocal(source, page, pointer);
+  if (!from || !to) return start.element;
+  const width = crop.right - crop.left;
+  const height = crop.bottom - crop.top;
+  // The picture follows the pointer, so the window moves the other way across it.
+  const left = Math.max(0, Math.min(1 - width, crop.left - (to.x - from.x)));
+  const top = Math.max(0, Math.min(1 - height, crop.top - (to.y - from.y)));
+  return { box: start.element.box, crop: tidyCrop({ left, top, right: left + width, bottom: top + height }) };
+}
+
+/**
+ * Scale the picture under a fixed crop window by one of the source's own
+ * corners. The picture can never shrink so far that the window hangs off it:
+ * past that point it stops at the smallest size that still covers the window.
+ */
+export function scaleUnderWindow(start: { element: ImageElement; handle: ResizeHandle; pointer: Point }, pointer: Point, page: Size): ImageElement {
+  const source = uncroppedBox(start.element.box, start.element.crop, page);
+  const attempt = (at: Point) => {
+    const scaled = resizeTo({ box: { ...source, lockedRatio: true }, handle: start.handle, pointer: start.pointer }, at, page);
+    const crop = cropFromWindow(start.element.box, { ...scaled, lockedRatio: source.lockedRatio }, page);
+    return crop && inside(crop) ? crop : null;
+  };
+  let crop = attempt(pointer);
+  if (!crop) {
+    // The valid scales run from the start of the gesture up to some limit, so
+    // the limit along the pointer's path is found by bisection.
+    let low = 0; let high = 1;
+    for (let step = 0; step < 30; step += 1) {
+      const mid = (low + high) / 2;
+      const at = { x: start.pointer.x + (pointer.x - start.pointer.x) * mid, y: start.pointer.y + (pointer.y - start.pointer.y) * mid };
+      if (attempt(at)) low = mid; else high = mid;
+    }
+    crop = attempt({ x: start.pointer.x + (pointer.x - start.pointer.x) * low, y: start.pointer.y + (pointer.y - start.pointer.y) * low });
+  }
+  return crop ? { box: start.element.box, crop: tidyCrop(crop) } : start.element;
 }

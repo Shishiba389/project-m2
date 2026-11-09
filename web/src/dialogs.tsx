@@ -33,6 +33,10 @@ export const SHORTCUTS: [string, string][] = [
   ["Shift + 1", "Fit the page in view"], ["Shift + 2", "Zoom to selection"],
   ["Drag on empty canvas", "Marquee select"], ["Shift + click", "Add to selection"],
   ["Ctrl + A on canvas", "Select every object"], ["Ctrl + D", "Duplicate the layer"],
+  ["Drag a corner", "Resize, keeping proportions"], ["Drag an edge", "Crop that side"],
+  ["Shift + drag an edge", "Stretch instead of cropping"], ["Alt + drag a handle", "Resize from the centre"],
+  ["Shift + drag rotate", "Rotate in 15° steps"],
+  ["Double-click image", "Crop: drag the image under the window"], ["Enter in crop", "Finish the crop"], ["Esc in crop", "Cancel the crop"],
   ["Scroll", "Pan vertically"], ["Shift + scroll", "Pan horizontally"],
   ["\\", "Compare original"],
   ["Ctrl + Shift + F", "Focus mode"], ["Esc", "Exit focus mode"], ["Arrows", "Nudge object"],
@@ -170,7 +174,7 @@ export function ExportProgress({ run, done, bytes, queue, options, onCancel, onA
         {!done
           ? `Rendering ${run.done} / ${run.total} (${percent}%)`
           : empty
-            ? `Nothing was rendered, so no file was downloaded — the log below says why.`
+            ? `Nothing was rendered, so no file was downloaded. The log below says why.`
             : `${good} of ${run.total} rendered · ${(bytes / 1048576).toFixed(1)} MB zip`}
       </DialogDescription>
     </DialogHeader>
@@ -215,7 +219,7 @@ export function RemoveDialog({ intent, onCancel, onConfirm }: {
     <DialogHeader>
       <DialogTitle>Confirm removal</DialogTitle>
       <DialogDescription>
-        Move {intent.count} image{intent.count === 1 ? "" : "s"} to Trash? They leave this project only — the source files are untouched.
+        Move {intent.count} image{intent.count === 1 ? "" : "s"} to Trash? They leave this project only; the source files are untouched.
       </DialogDescription>
     </DialogHeader>
     <DialogFooter>
@@ -309,7 +313,7 @@ export function CloudDialog({ open, onOpenChange, onImport }: {
       <DialogDescription>Paste one image URL per line. The duplicate-handling policy still applies.</DialogDescription>
     </DialogHeader>
     <textarea className="cloud-input" rows={6} value={text} onChange={(event) => setText(event.target.value)}
-      placeholder="https://cdn.example.com/8809968136217_1.png" aria-label="Image URLs" />
+      placeholder="One image URL per line" aria-label="Image URLs" />
     <p className="inspector-note">{names.length} usable image URL{names.length === 1 ? "" : "s"} detected.</p>
     <DialogFooter>
       <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

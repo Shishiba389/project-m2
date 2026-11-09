@@ -16,7 +16,7 @@ import {
 import { inspectSources, summarise, toSources, type BatchSource } from "@/src/batch";
 import { BatchScreen, ImportForkDialog } from "@/src/batchscreen";
 import { Inspector, type Selection } from "@/src/inspector";
-import { applyRecipeToAssets, createRecipe } from "@/src/editor-engine";
+import { applyRecipe, defaultApplyOptions, recipeFromElement, type ApplyOptions } from "@/src/editor-engine";
 import {
   AssetImage, ContextualToolbar, defaultGuides, Editor, Gallery, ImportScreen, PresetManager,
   Review, SettingsScreen, type CompareView, type EditorTool, type Guides,
@@ -25,9 +25,12 @@ import {
   assetIdOf, assetKey, backTarget, countByStatus, customPreset, docFromPreset, docTarget, emptyFilter, filterAssets,
   dropLayout, frameIdOf, frameKey, newPlacement, orderStack, placementIdOf, placementKey, reorderStack,
   megabytes, mergeImport, presetById, PRESETS, ratioLabel, redoTargets, statusOf, undoTargets,
-  type Asset, type CanvasLayer, type Doc, type DupPolicy, type GalleryFilter, type Preset, type Scope, type Screen,
+  alignOf, alignOnPage, elementOf, enlargement, isManual, layoutMatch, pageLayout, relayout, rescaleDoc, rescaleElement, validateElement,
+  type Align, type Asset, type CanvasLayer, type Doc, type DupPolicy, type Fit, type GalleryFilter, type Preset, type Scope, type Screen,
 } from "@/src/flow";
-import { fullPageImage, resetCrop, type CropRect, type ImageBox, type ImageElement } from "@/src/image-geometry";
+import { layoutBox, pictureAspect, type ImageBox, type ImageElement, type Rect } from "@/src/image-geometry";
+import { recrop } from "@/src/gestures";
+import { isWhole } from "@/src/subject";
 import { clampZoom, fitViewport, zoomCentred, zoomToRect, type Viewport } from "@/src/viewport";
 import { boxBounds } from "@/src/snap";
 import { alignSelection, distributeSelection, type Edge as AlignEdge, type Selectable } from "@/src/selection";
@@ -40,7 +43,13 @@ import {
 const initialDoc = docFromPreset(presetById("zalando"));
 const EMPTY_EDITOR_ASSET: Asset = {
   id: 0, name: "Untitled canvas", kind: "shoe", format: "png", src: { w: 1, h: 1 },
-  processed: false, overflow: false, fixed: false, corrupt: false, element: fullPageImage(),
+  processed: false, corrupt: false, element: null,
+};
+/** Geometry written by a hand edit carries no recipe mark: it is the user's now. */
+const byHand = (element: ImageElement | null): ImageElement | null => {
+  if (!element || element.origin === undefined) return element;
+  const { origin: _recipe, ...plain } = element;
+  return plain;
 };
 /** One image's before and after, inside a single undoable action. */
 /**
@@ -51,7 +60,15 @@ const EMPTY_EDITOR_ASSET: Asset = {
  * lives in the document, so moving one is a document edit and undoes on that
  * stack instead.
  */
-type ElementChange = { assetId: number; before: ImageElement; after: ImageElement };
+type ElementChange = {
+  assetId: number; before: ImageElement | null; after: ImageElement | null;
+  /**
+   * Whether the image counted as worked on, before and after. Undoing an
+   * apply-all puts the images back to "Pending" as well as back in place;
+   * restoring only the geometry left them reading "Completed".
+   */
+  processed?: { before: boolean; after: boolean };
+};
 /**
  * An entry holds a list rather than one image, because a command can touch
  * several at once: aligning a multi-selection moves every member, and it has
@@ -62,17 +79,40 @@ type ElementHistoryEntry = { changes: ElementChange[]; seq: number };
 const applyChanges = (assets: Asset[], changes: ElementChange[], direction: "before" | "after") =>
   assets.map((asset) => {
     const change = changes.find((entry) => entry.assetId === asset.id);
-    return change ? { ...asset, element: change[direction] } : asset;
+    return change ? { ...asset, element: change[direction], ...(change.processed ? { processed: change.processed[direction] } : {}) } : asset;
   });
 /** Where a file drop landed on the canvas: inside a frame, or free at a point. */
 type DropTarget = { frameId?: string; at?: { x: number; y: number } };
-const sameElement = (left: ImageElement, right: ImageElement) =>
-  left.crop?.left === right.crop?.left && left.crop?.top === right.crop?.top
+/** Null is "laid out by the page", which only ever equals itself. */
+const sameElement = (left: ImageElement | null, right: ImageElement | null) =>
+  left === right || left !== null && right !== null
+  && left.crop?.left === right.crop?.left && left.crop?.top === right.crop?.top
   && left.crop?.right === right.crop?.right && left.crop?.bottom === right.crop?.bottom
   && (left.crop === null) === (right.crop === null)
   && left.box.x === right.box.x && left.box.y === right.box.y && left.box.w === right.box.w && left.box.h === right.box.h
   && left.box.rotation === right.box.rotation && left.box.flipH === right.box.flipH && left.box.flipV === right.box.flipV
   && left.box.lockedRatio === right.box.lockedRatio;
+
+/**
+ * A free image placed inside a cell of the page - a drop, or an image that
+ * declined a frame - fitted whole and centred, so its box hugs the picture
+ * instead of being a square with the picture letterboxed inside it.
+ */
+/** What the editor knows about where the product is, in words, for the inspector. */
+const productNote = (asset: Pick<Asset, "subject">): { text: string; found: boolean } | undefined => {
+  const subject = asset.subject;
+  if (subject === undefined) return undefined;
+  if (!subject || isWhole(subject.rect)) return { text: "No product found: the whole picture is measured.", found: false };
+  const share = (value: number) => Math.round(value * 100);
+  return {
+    text: `Product ${share(subject.rect.right - subject.rect.left)} × ${share(subject.rect.bottom - subject.rect.top)}% of the picture`
+      + ` · ${subject.method === "alpha" ? "transparent" : "plain"} background`,
+    found: true,
+  };
+};
+
+const placedIn = (asset: Pick<Asset, "src">, cell: Rect, page: { width: number; height: number }): ImageElement =>
+  ({ box: layoutBox(pictureAspect(asset.src, null), page, "contain", { horizontal: "center", vertical: "center" }, cell), crop: null });
 
 /**
  * A single clock orders the two undo stacks. Document edits (canvas, frames)
@@ -147,20 +187,27 @@ export function MinimaWorkspace() {
   // into the distraction-free canvas after it is deliberately chosen.
   const [focus, setFocus] = useState<false | "gallery" | "editor">(false);
   const [focusTool, setFocusTool] = useState<EditorTool>("image");
-  const [cropSession, setCropSession] = useState<{ assetId: number; crop: CropRect | null } | null>(null);
+  /**
+   * The crop being edited. Cropping now moves the box with the window, so a
+   * cancel has to put back the whole element, not just the crop fractions -
+   * and for a placement the element lives in the document, so it opens a
+   * document gesture rather than an element transaction.
+   */
+  const [cropSession, setCropSession] = useState<{ key: string; assetId: number; placementId: string | null; before: ImageElement | null } | null>(null);
   /** Which frame is selected, and whether its content is being edited. */
   const [frameSelection, setFrameSelection] = useState<{ id: string; editing: boolean } | null>(null);
   const [replaceIntent, setReplaceIntent] = useState<{ frameId: string; assetId: number; name: string; at?: { x: number; y: number } } | null>(null);
   const [elementHistory, setElementHistory] = useState({ past: [] as ElementHistoryEntry[], future: [] as ElementHistoryEntry[] });
-  const elementTransaction = useRef<{ assetId: number; before: ImageElement } | null>(null);
+  const elementTransaction = useRef<{ assetId: number; before: ImageElement | null; processed: boolean } | null>(null);
   const commitElementTransactionRef = useRef<() => void>(() => {});
   const [railOpen, setRailOpen] = useState(true);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  // Below 980px the inspector is a panel over the canvas, so it starts closed there.
+  const [inspectorOpen, setInspectorOpen] = useState(() => typeof window === "undefined" || window.innerWidth > 980);
   /** Gallery thumbnail size. The editor has its own viewport, not a zoom level. */
   const [zoom, setZoom] = useState(100);
   /** Zoom 0 means "not placed yet": the editor fits the page on first measure. */
   const [viewport, setViewport] = useState<Viewport>({ zoom: 0, panX: 0, panY: 0 });
-  const [editorView, setEditorView] = useState({ width: 0, height: 0 });
+  const [editorView, setEditorView] = useState<{ width: number; height: number; top?: number }>({ width: 0, height: 0 });
   /** The live viewport and the running glide, for callbacks that must not close over either. */
   const viewportRef = useRef<Viewport>({ zoom: 0, panX: 0, panY: 0 });
   const glide = useRef<number | null>(null);
@@ -306,48 +353,44 @@ export function MinimaWorkspace() {
     });
   }, [visible]);
 
+  /** Defined once the gesture plumbing exists; presets are wired before that. */
+  const updateDocRef = useRef<(next: (current: Doc) => Doc) => void>(() => {});
   const applyPreset = useCallback((id: string) => {
-    setDoc((current) => ({ ...docFromPreset(presetById(id, presets)), frames: current.frames }));
+    // Everything on the canvas survives a preset change: frames, free images
+    // and their order. Only the page rules are the preset's.
+    updateDocRef.current((current) => ({
+      ...docFromPreset(presetById(id, presets)), frames: current.frames, placements: current.placements, stack: current.stack,
+    }));
     touch(`Preset ${presetById(id, presets).label} loaded`);
-  }, [presets, setDoc, touch]);
+  }, [presets, touch]);
 
-  /** Build a versioned recipe and calculate an independent layout per image. */
-  const runApply = useCallback(() => {
-    if (processing || !scoped.length) return;
-    setProcessing(true);
-    setProgress(25);
-    const ids = new Set(scoped.map((asset) => asset.id));
-    const recipe = createRecipe(doc);
-    setAssets((current) => {
-      const calculated = applyRecipeToAssets(current.filter((asset) => ids.has(asset.id)), recipe);
-      const byId = new Map(calculated.map((asset) => [asset.id, asset]));
-      return current.map((asset) => byId.get(asset.id) ?? asset);
-    });
-    setProgress(100); setProcessing(false);
-    touch(`Recipe v${recipe.version} applied to ${ids.size} image${ids.size === 1 ? "" : "s"}`);
-  }, [doc, processing, scoped, touch]);
-
-  const setActiveElement = useCallback((element: ImageElement) => {
+  const setActiveElement = useCallback((element: ImageElement | null) => {
     if (!active) return;
     const currentAsset = assetsRef.current.find((asset) => asset.id === active.id) ?? active;
     if (sameElement(element, currentAsset.element)) return;
-    const next = assetsRef.current.map((asset) => asset.id === active.id ? { ...asset, element, processed: true, fixed: false } : asset);
+    const next = assetsRef.current.map((asset) => asset.id === active.id ? { ...asset, element: byHand(element), processed: true } : asset);
     assetsRef.current = next;
     setAssets(next);
   }, [active]);
   const beginElementTransaction = useCallback(() => {
     if (!active || elementTransaction.current) return;
     const current = assetsRef.current.find((asset) => asset.id === active.id) ?? active;
-    elementTransaction.current = { assetId: active.id, before: current.element };
+    elementTransaction.current = { assetId: active.id, before: current.element, processed: current.processed };
   }, [active]);
   const commitElementTransaction = useCallback(() => {
     const transaction = elementTransaction.current;
     if (!transaction) return;
     elementTransaction.current = null;
-    const after = assetsRef.current.find((asset) => asset.id === transaction.assetId)?.element;
-    if (!after || sameElement(transaction.before, after)) return;
+    const asset = assetsRef.current.find((item) => item.id === transaction.assetId);
+    // Null is a real "after" now - laid out by the page again - so only a
+    // missing asset or an unchanged element skips the entry.
+    if (!asset || sameElement(transaction.before, asset.element)) return;
+    const change: ElementChange = {
+      assetId: transaction.assetId, before: transaction.before, after: asset.element,
+      processed: { before: transaction.processed, after: asset.processed },
+    };
     setElementHistory((history) => ({
-      past: [...history.past, { changes: [{ assetId: transaction.assetId, before: transaction.before, after }], seq: historyTick() }].slice(-60), future: [],
+      past: [...history.past, { changes: [change], seq: historyTick() }].slice(-60), future: [],
     }));
   }, []);
   commitElementTransactionRef.current = commitElementTransaction;
@@ -440,10 +483,10 @@ export function MinimaWorkspace() {
     const already = new Set(placed.map((layer) => layer.assetId));
     const subject = activeId !== null && !already.has(activeId) && !framedIds.has(activeId)
       ? assets.filter((asset) => asset.id === activeId)
-        .map((asset) => ({ key: assetKey(asset.id), assetId: asset.id, element: asset.element, placementId: null }))
+        .map((asset) => ({ key: assetKey(asset.id), assetId: asset.id, element: elementOf(asset, doc), placementId: null }))
       : [];
     return [...placed, ...subject];
-  }, [assets, activeId, doc.placements, framedIds]);
+  }, [assets, activeId, doc, framedIds]);
   const layerByKey = useMemo(() => new Map(canvasLayers.map((layer) => [layer.key, layer])), [canvasLayers]);
 
   /** Write one layer's geometry to whichever list owns it. */
@@ -558,7 +601,7 @@ export function MinimaWorkspace() {
     }));
     setFrameSelection(null);
     setCanvasSelection(released ? [placementKey(released.id)] : []);
-    touch(frame.imageId === null ? "Frame deleted" : "Frame deleted — image kept on the canvas");
+    touch(frame.imageId === null ? "Frame deleted" : "Frame deleted. The image stays on the canvas");
   }, [commitDocGesture, releasedPlacement, setDoc, touch]);
 
   const attachToFrame = useCallback((frameId: string, assetId: number, force = false) => {
@@ -678,7 +721,7 @@ export function MinimaWorkspace() {
   const selection: Selection | null = screen !== "editor" ? null
     : selectedFrameObject
       ? { label: selectedFrameObject.imageId === null ? "Empty frame" : "Frame", box: selectedFrameObject.box }
-      : activeLayer && active ? { label: active.name, box: activeLayer.element.box } : null;
+      : activeLayer && active ? { label: active.name, box: activeLayer.element.box, product: productNote(assets.find((item) => item.id === activeLayer.assetId) ?? active) } : null;
   /** One typed edit is one history entry, on whichever of the two stacks owns it. */
   const setSelectionBox = (box: ImageBox) => {
     if (selectedFrameObject) { writeFrame({ ...selectedFrameObject, box }); return; }
@@ -709,7 +752,7 @@ export function MinimaWorkspace() {
     const boxes = new Map(next.map((item) => [item.key, item.box]));
     const assetsNext = assetsRef.current.map((asset) => {
       const box = boxes.get(assetKey(asset.id));
-      return box ? { ...asset, element: { ...asset.element, box } } : asset;
+      return box ? { ...asset, element: byHand({ ...elementOf(asset, docRef.current), box }), processed: true } : asset;
     });
     assetsRef.current = assetsNext; setAssets(assetsNext);
     setDocLive((current) => ({
@@ -736,8 +779,11 @@ export function MinimaWorkspace() {
     const changes: ElementChange[] = [];
     for (const before of snapshot.assets) {
       const after = assetsRef.current.find((item) => item.id === before.id);
-      if (after && !sameElement(before.element, after.element)) {
-        changes.push({ assetId: before.id, before: before.element, after: after.element });
+      if (after && (!sameElement(before.element, after.element) || before.processed !== after.processed)) {
+        changes.push({
+          assetId: before.id, before: before.element, after: after.element,
+          processed: { before: before.processed, after: after.processed },
+        });
       }
     }
     if (changes.length) setElementHistory((history) => ({ past: [...history.past, { changes, seq }].slice(-60), future: [] }));
@@ -749,6 +795,144 @@ export function MinimaWorkspace() {
     writeSelection(next);
     commitSelectionGesture();
   }, [beginSelectionGesture, commitSelectionGesture, writeSelection]);
+
+  /* ------------------------------------------------------- page commands
+
+     Fit, Fill, Stretch and the nine-point alignment act on the selected image
+     against the whole page, and also become the page's rule for every image
+     nobody has placed by hand. Both halves are one action: the document and
+     the element share one history sequence, so one Ctrl+Z undoes both. */
+
+  /** Write one layer's element inside an open selection gesture, live. */
+  const writeLayerLive = useCallback((layer: CanvasLayer, element: ImageElement | null) => {
+    if (layer.placementId === null) {
+      const next = assetsRef.current.map((asset) => asset.id === layer.assetId ? { ...asset, element: byHand(element), processed: true } : asset);
+      assetsRef.current = next; setAssets(next);
+      return;
+    }
+    const id = layer.placementId;
+    setDocLive((current) => ({
+      ...current,
+      placements: current.placements.map((placement) => placement.id === id && element ? { ...placement, element } : placement),
+    }));
+  }, [setDocLive]);
+
+  const pageRuleCommand = useCallback((patch: Partial<Pick<Doc, "fit" | "align">>,
+    elementFor: (layer: CanvasLayer, asset: Asset, rules: Doc) => ImageElement | null | undefined) => {
+    commitDocGesture();
+    const rules = { ...docRef.current, ...patch };
+    beginSelectionGesture();
+    setDocLive((current) => ({ ...current, ...patch }));
+    const layer = activeLayer;
+    const asset = layer ? assetsRef.current.find((item) => item.id === layer.assetId) : undefined;
+    if (layer && asset) {
+      const element = elementFor(layer, asset, rules);
+      if (element !== undefined) writeLayerLive(layer, element);
+    }
+    commitSelectionGesture();
+  }, [activeLayer, beginSelectionGesture, commitDocGesture, commitSelectionGesture, setDocLive, writeLayerLive]);
+
+  /**
+   * Fit, Fill or Stretch: lay the selected image out against the whole page
+   * again, whatever size and place it had. An untouched subject simply goes
+   * back to following the page; anything with a crop or a mirror to keep, and
+   * every placement, gets a real box.
+   */
+  const applyFit = useCallback((fit: Fit) => {
+    pageRuleCommand({ fit }, (layer, asset, rules) => {
+      const keep = layer.element.crop !== null || layer.element.box.flipH || layer.element.box.flipV;
+      if (layer.placementId === null && !keep) return null;
+      return relayout(layer.element, asset.src, rules, fit);
+    });
+    touch(`${fit} to page`);
+  }, [pageRuleCommand, touch]);
+
+  /**
+   * Alignment: an image that is in one of the page layouts is laid out again
+   * at the new anchor; one the user sized by hand keeps its size and moves.
+   */
+  const applyAlign = useCallback((align: Align) => {
+    pageRuleCommand({ align }, (layer, asset, rules) => {
+      if (layer.placementId === null && asset.element === null) return undefined;
+      const fit = layoutMatch(layer.element, asset.src, docRef.current);
+      return fit
+        ? relayout(layer.element, asset.src, rules, fit, align)
+        : { ...layer.element, box: alignOnPage(layer.element.box, align) };
+    });
+  }, [pageRuleCommand]);
+
+  /** Reset: back to exactly what the page gives it - no crop, no mirror, no rotation. */
+  const resetLayout = useCallback(() => {
+    pageRuleCommand({}, (layer, asset, rules) => layer.placementId === null ? null : pageLayout(asset.src, rules));
+    touch("Image reset to the page layout");
+  }, [pageRuleCommand, touch]);
+
+  /** Which page layout the selected image is in, for the toolbar and inspector to light up. */
+  const activeAsset = activeLayer ? assets.find((item) => item.id === activeLayer.assetId) : undefined;
+  const followsPage = Boolean(activeLayer && activeLayer.placementId === null && activeAsset?.element === null);
+  const activeFit: Fit | null = !activeLayer || !activeAsset ? doc.fit
+    : followsPage ? doc.fit : layoutMatch(activeLayer.element, activeAsset.src, doc);
+  const activeAlign: Align | null = !activeLayer || followsPage || activeFit ? doc.align : alignOf(activeLayer.element.box);
+
+  /**
+   * Any document change from the inspector. A change of page size carries
+   * every stored box onto the new page - placements, frames and images placed
+   * by hand - keeping each picture's own proportions, as one undo step;
+   * everything else is an ordinary document write.
+   */
+  const updateDoc = useCallback((next: (current: Doc) => Doc) => {
+    const before = docRef.current;
+    const after = next(before);
+    if (after === before) return;
+    if (after.width === before.width && after.height === before.height) { writeDoc(() => after); return; }
+    commitDocGesture();
+    const from = { width: before.width, height: before.height };
+    const to = { width: after.width, height: after.height };
+    beginSelectionGesture();
+    setDocLive(rescaleDoc(after, from));
+    const moved = assetsRef.current.map((asset) => asset.element ? { ...asset, element: rescaleElement(asset.element, from, to) } : asset);
+    assetsRef.current = moved; setAssets(moved);
+    commitSelectionGesture();
+  }, [beginSelectionGesture, commitDocGesture, commitSelectionGesture, setDocLive, writeDoc]);
+  updateDocRef.current = updateDoc;
+
+  /* --------------------------------------------- edit one, apply to all (§22-29)
+
+     The image open in the editor is the reference. Its edit is read back as a
+     recipe - relative size, alignment, offset, orientation, optionally the
+     crop - and every other image in scope gets its own layout from it. Images
+     the user adjusted by hand are left alone unless they ask (§38). The whole
+     run is one entry on the element stack: one Ctrl+Z puts every image back. */
+
+  const [applyOptions, setApplyOptions] = useState<ApplyOptions>(defaultApplyOptions);
+  const applyTargets = useMemo(() => {
+    const candidates = scoped.filter((asset) => asset.id !== activeId && !asset.corrupt && !framedIds.has(asset.id));
+    const kept = applyOptions.overwriteManual ? [] : candidates.filter(isManual);
+    return { apply: candidates.filter((asset) => !kept.includes(asset)), kept };
+  }, [activeId, applyOptions.overwriteManual, framedIds, scoped]);
+  const runApply = useCallback(() => {
+    const reference = assetsRef.current.find((asset) => asset.id === activeId);
+    if (!reference || reference.corrupt) { touch("Open an image to use as the reference first"); return; }
+    if (framedIds.has(reference.id)) { touch("This image is inside a frame - pick a free image as the reference"); return; }
+    const ids = new Set(applyTargets.apply.map((asset) => asset.id));
+    if (!ids.size) { touch(applyTargets.kept.length ? "Every other image was adjusted by hand - tick \"Also change them\" to include them" : "Select other images to apply this edit to"); return; }
+    const rules = docRef.current;
+    const recipe = recipeFromElement(reference, rules, applyOptions);
+    let review = 0;
+    beginSelectionGesture();
+    const next = assetsRef.current.map((asset) => {
+      if (asset.id === reference.id) return { ...asset, processed: true };
+      if (!ids.has(asset.id)) return asset;
+      const result = applyRecipe(asset, recipe, rules);
+      if (result.status === "needs_review") review += 1;
+      return { ...asset, element: result.element, processed: true };
+    });
+    assetsRef.current = next; setAssets(next);
+    commitSelectionGesture();
+    touch(`Applied ${reference.name}'s edit to ${ids.size} image${ids.size === 1 ? "" : "s"}`
+      + (review ? ` · ${review} need review` : "")
+      + (applyTargets.kept.length ? ` · ${applyTargets.kept.length} adjusted by hand kept` : ""));
+  }, [activeId, applyOptions, applyTargets, beginSelectionGesture, commitSelectionGesture, framedIds, touch]);
 
   /**
    * Point the whole editor at a set of keys.
@@ -918,30 +1102,60 @@ export function MinimaWorkspace() {
     onFrameDetach: detachFromFrame, onFrameAttach: attachToFrame,
   };
   const startCrop = useCallback(() => {
-    if (!active) return;
-    beginElementTransaction();
-    setCropSession((current) => current?.assetId === active.id ? current : { assetId: active.id, crop: active.element.crop ? { ...active.element.crop } : null });
-  }, [active, beginElementTransaction]);
+    if (!activeLayer || cropSession?.key === activeLayer.key) return;
+    const asset = assetsRef.current.find((item) => item.id === activeLayer.assetId);
+    beginActiveGesture();
+    setCropSession({
+      key: activeLayer.key, assetId: activeLayer.assetId, placementId: activeLayer.placementId,
+      before: activeLayer.placementId ? activeLayer.element : asset?.element ?? null,
+    });
+  }, [activeLayer, beginActiveGesture, cropSession]);
+  /** Reset crop keeps the picture where it is and grows the box back to the whole source. */
   const resetActiveCrop = useCallback(() => {
-    if (!active) return;
-    setActiveElement(resetCrop(active.element));
-  }, [active, setActiveElement]);
+    if (activeLayer) writeActiveElement(recrop(activeLayer.element, null, { width: docRef.current.width, height: docRef.current.height }));
+  }, [activeLayer, writeActiveElement]);
   const cancelCrop = useCallback(() => {
     if (!cropSession) return;
-    const next = assetsRef.current.map((asset) => asset.id === cropSession.assetId
-      ? { ...asset, element: { ...asset.element, crop: cropSession.crop ? { ...cropSession.crop } : null } }
-      : asset);
-    assetsRef.current = next; setAssets(next);
-    discardElementTransaction();
+    if (cropSession.placementId) cancelDocGesture();
+    else {
+      const next = assetsRef.current.map((asset) => asset.id === cropSession.assetId ? { ...asset, element: cropSession.before } : asset);
+      assetsRef.current = next; setAssets(next);
+      discardElementTransaction();
+    }
     setCropSession(null);
     setFocusTool("image");
-  }, [cropSession, discardElementTransaction]);
+  }, [cancelDocGesture, cropSession, discardElementTransaction]);
 
+  /**
+   * Review's fix, for real: a picture cut off by the page goes back to fitting
+   * it; a picture enlarged past its own pixels shrinks about its centre until
+   * it is not. Both write the layout the export uses, as one undoable action.
+   */
   const fixAssets = useCallback((ids: number[]) => {
     const idSet = new Set(ids);
-    setAssets((current) => current.map((asset) => idSet.has(asset.id) && !asset.corrupt ? { ...asset, fixed: true } : asset));
-    touch(`Auto-fixed ${ids.length} image${ids.length === 1 ? "" : "s"}`);
-  }, [touch]);
+    const rules = docRef.current;
+    let fixed = 0;
+    beginSelectionGesture();
+    const next = assetsRef.current.map((asset) => {
+      if (!idSet.has(asset.id) || asset.corrupt) return asset;
+      const original = elementOf(asset, rules);
+      let element = original;
+      if (validateElement(element, asset.src, rules, asset.subject).some((warning) => warning.code === "CLIPPING")) {
+        element = relayout(element, asset.src, rules, "Fit");
+      }
+      const scale = enlargement(element, asset.src, rules);
+      if (scale > 1.1) {
+        const w = element.box.w / scale; const h = element.box.h / scale;
+        element = { ...element, box: { ...element.box, x: element.box.x + (element.box.w - w) / 2, y: element.box.y + (element.box.h - h) / 2, w, h } };
+      }
+      if (element === original) return asset;
+      fixed += 1;
+      return { ...asset, element: byHand(element), processed: true };
+    });
+    assetsRef.current = next; setAssets(next);
+    commitSelectionGesture();
+    touch(fixed ? `Fixed ${fixed} image${fixed === 1 ? "" : "s"}` : "Nothing to fix");
+  }, [beginSelectionGesture, commitSelectionGesture, touch]);
 
   const importNames = useCallback((names: string[]) => {
     if (!names.length) return;
@@ -980,6 +1194,7 @@ export function MinimaWorkspace() {
       src: source.width && source.height ? { w: source.width, h: source.height } : undefined,
       corrupt: Boolean(source.error),
       faint: source.faint,
+      subject: source.subject,
     }));
     const merged = mergeImport(assets, incomingAssets, policy);
     const retainedUrls = new Set(merged.assets.flatMap((asset) => [asset.url, asset.thumbnailUrl].filter(Boolean)));
@@ -997,10 +1212,8 @@ export function MinimaWorkspace() {
     // and several dropped at once are fanned out so they do not stack up.
     if (drop?.at && !drop.frameId && landed.length) {
       const boxes = dropLayout(landed.length, drop.at);
-      const dropped = landed.map((asset, index) => newPlacement(asset.id, {
-        ...asset.element,
-        box: { ...asset.element.box, ...boxes[index] },
-      }));
+      const page = { width: docRef.current.width, height: docRef.current.height };
+      const dropped = landed.map((asset, index) => newPlacement(asset.id, placedIn(asset, boxes[index], page)));
       setDoc((current) => ({ ...current, placements: [...current.placements, ...dropped] }));
       setCanvasSelection(dropped.map((placement) => placementKey(placement.id)));
     }
@@ -1054,9 +1267,9 @@ export function MinimaWorkspace() {
 
   const deletePreset = useCallback((preset: Preset) => {
     setPresets((current) => current.filter((row) => row.id !== preset.id));
-    if (doc.presetId === preset.id) setDoc((current) => ({ ...docFromPreset(PRESETS[0]), frames: current.frames }));
+    if (doc.presetId === preset.id) updateDoc((current) => ({ ...docFromPreset(PRESETS[0]), frames: current.frames, placements: current.placements, stack: current.stack }));
     touch(`Deleted ${preset.label}`);
-  }, [doc.presetId, setDoc, touch]);
+  }, [doc.presetId, touch, updateDoc]);
 
   /**
    * The export renders for real: each queued image is drawn through its own
@@ -1124,6 +1337,8 @@ export function MinimaWorkspace() {
         setFocus(false); return;
       }
       if (typing) return;
+      // Enter finishes a crop, the counterpart of Esc cancelling it.
+      if (cropSession && event.key === "Enter") { event.preventDefault(); finishCrop(); return; }
       // Frame shortcuts only bind on the canvas: in the Gallery, Enter opens
       // the editor and Backspace belongs to the image list.
       if (screen === "editor" && (event.key === "Delete" || event.key === "Backspace") && !mod) {
@@ -1151,7 +1366,7 @@ export function MinimaWorkspace() {
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     return () => { window.removeEventListener("keydown", onKeyDown); window.removeEventListener("keyup", onKeyUp); };
-  }, [active, askRemoval, cancelContentEdit, cancelCrop, canvasSelection, cropSession, deleteFrame, deleteSelected, duplicateLayer, frameSelection, goto, openEditor, redo, removeLayer, screen, selectKeys, startContentEdit, undo, visible]);
+  }, [active, askRemoval, cancelContentEdit, cancelCrop, canvasSelection, cropSession, deleteFrame, finishCrop, deleteSelected, duplicateLayer, frameSelection, goto, openEditor, redo, removeLayer, screen, selectKeys, startContentEdit, undo, visible]);
 
   const pageSize = { width: doc.width, height: doc.height };
   const canZoomViewport = screen === "editor" && editorView.width > 0;
@@ -1201,9 +1416,9 @@ export function MinimaWorkspace() {
   const zoomToSelection = useCallback(() => {
     if (screen !== "editor" || !canZoomViewport) return;
     const frame = doc.frames.find((item) => item.id === frameSelection?.id);
-    const box = frame?.box ?? assetsRef.current.find((item) => item.id === activeId)?.element.box;
+    const box = frame?.box ?? activeLayer?.element.box;
     if (box) glideTo(zoomToRect(boxBounds(box), pageSize, editorView));
-  }, [activeId, canZoomViewport, doc.frames, editorView, frameSelection, glideTo, pageSize.width, pageSize.height, screen]);
+  }, [activeLayer, canZoomViewport, doc.frames, editorView, frameSelection, glideTo, pageSize.width, pageSize.height, screen]);
   viewCommands.current = { fit: fitPage, zoomToSelection };
   selectablesRef.current = selectables;
   const step = useCallback((delta: number) => {
@@ -1239,8 +1454,8 @@ export function MinimaWorkspace() {
         <span>{assets.findIndex((asset) => asset.id === active.id) + 1} / {assets.length}</span>
         <Button variant="ghost" size="icon" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></Button>
       </div>
-      <ContextualToolbar className="focus-contextual-toolbar" mode={focusTool} onMode={setFocusTool} element={active.element} fit={doc.fit}
-        onFit={(fit) => setDoc((current) => ({ ...current, fit }))} onReplace={() => filesInput.current?.click()} onElement={applyElementAction}
+      <ContextualToolbar className="focus-contextual-toolbar" mode={focusTool} onMode={setFocusTool} element={activeLayer?.element ?? elementOf(active, doc)} fit={activeFit}
+        onFit={applyFit} onReset={resetLayout} onElement={applyActiveElement}
         onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} grid={guides.grid} />
       <Button variant="secondary" size="sm" onClick={() => { finishCrop(); setFocus(false); filesInput.current?.click(); }}><Upload /> Import</Button>
@@ -1250,7 +1465,7 @@ export function MinimaWorkspace() {
       <Editor asset={active} assets={assets} selected={selected} doc={doc} viewport={viewport} onViewport={setViewport} onViewSize={setEditorView} spacePan={spacePan} compare={false}
         compareView="split" splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onElement={writeActiveElement} onElementAction={applyActiveElement} onElementStart={beginActiveGesture} onElementEnd={commitActiveGesture} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
-        onDrop={(files, drop) => importFiles(files, true, drop)} onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
+        onDrop={(files, drop) => importFiles(files, true, drop)} onFit={applyFit} onReset={resetLayout} activeFit={activeFit} onEditMode={setFocusTool}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} focusMode editMode={focusTool} cropActive={Boolean(cropSession)} {...frameProps} />
     </div>
     <button className="canvas-arrow right" aria-label="Next image" onClick={() => step(1)}><ChevronRight /></button>
@@ -1272,7 +1487,7 @@ export function MinimaWorkspace() {
     : screen === "presets" ? "Presets Manager"
     : screen === "review" ? "Error Diagnostics"
     : screen === "batch" ? "Batch convert"
-    : screen === "import" ? "Drag & Drop"
+    : screen === "import" ? "Import"
     : "MINIMA Resize";
 
   return <main className={`minima-app ${railOpen ? "" : "rail-collapsed"} ${inspectorOpen ? "" : "inspector-collapsed"}`}>
@@ -1346,7 +1561,7 @@ export function MinimaWorkspace() {
         compare={compare} compareView={compareView} splitAt={splitAt} overlay={overlay} guides={guides} target={target}
         onElement={writeActiveElement} onElementAction={applyActiveElement} onElementStart={beginActiveGesture} onElementEnd={commitActiveGesture} onCropStart={startCrop} onCropDone={finishCrop} onCropCancel={cancelCrop} onCropReset={resetActiveCrop} onSplit={setSplitAt} onChoose={openEditor} onImport={() => filesInput.current?.click()}
         onDrop={(files, drop) => importFiles(files, true, drop)}
-        onFit={(fit) => setDoc((current) => ({ ...current, fit }))}
+        onFit={applyFit} onReset={resetLayout} activeFit={activeFit}
         onToggleGrid={() => setGuides((current) => ({ ...current, grid: !current.grid }))} onStep={step} cropActive={Boolean(cropSession)} {...frameProps} />}
       {screen === "review" && <Review assets={flagged} target={target} onOpen={openEditor}
         onFix={(id) => fixAssets([id])} onFixAll={() => fixAssets(flagged.map((asset) => asset.id))} onRetry={runApply} />}
@@ -1360,8 +1575,12 @@ export function MinimaWorkspace() {
             onGestureStart={beginDocGesture} onGestureEnd={commitDocGesture}
             scopeCount={scoped.length} selectedCount={selected.length} totalCount={assets.length}
             compare={compare} overlay={overlay} processing={processing} progress={progress}
-            onPreset={applyPreset} onDoc={writeDoc} onGuides={setGuides} onScope={setScope} onOverlay={setOverlay}
-            onApply={runApply} onFocus={() => { if (hasActive) { goto("editor"); setFocus("gallery"); } else touch("Import an image to enter focus mode"); }} onClose={() => setInspectorOpen(false)}
+            onPreset={applyPreset} onDoc={updateDoc} onGuides={setGuides}
+            activeFit={activeFit} activeAlign={activeAlign} onFit={applyFit} onAlign={applyAlign} onScope={setScope} onOverlay={setOverlay}
+            onApply={runApply} applyOptions={applyOptions} onApplyOptions={setApplyOptions}
+            applyCount={applyTargets.apply.length} keptCount={applyTargets.kept.length} referenceName={active?.name ?? ""}
+            measuredOnProduct={Boolean(active?.subject && !isWhole(active.subject.rect))}
+            onFocus={() => { if (hasActive) { goto("editor"); setFocus("gallery"); } else touch("Import an image to enter focus mode"); }} onClose={() => setInspectorOpen(false)}
             onResetGuides={() => { setGuides(defaultGuides); applyPreset(doc.presetId); }} />)}
 
     </section>
@@ -1370,14 +1589,17 @@ export function MinimaWorkspace() {
       <span>{notice || (saving ? "Saving…" : "All changes saved")}
         {onImages && assets.length ? ` · ${selected.length} of ${assets.length} selected` : ""}
         {!assets.length ? " · no images" : ""}</span>
-      {screen !== "batch" && <div className="status-actions">
+      {/* Image controls appear with the images: on the empty first run they
+          would be a row of disabled buttons with nothing to act on. */}
+      {screen !== "batch" && assets.length > 0 && <div className="status-actions">
         {needsAttention > 0 && screen !== "review" && <Button variant="ghost" size="sm" onClick={() => goto("review")}><TriangleAlert /> {needsAttention} need attention</Button>}
         <Button variant="ghost" size="sm" aria-pressed={compare} disabled={!assets.length} onClick={() => { goto("editor"); setCompare((value) => !value); }}><Columns2 /> Compare</Button>
         <div className="view-switch" role="group" aria-label="Workspace view">
           <button className={screen === "gallery" ? "active" : ""} disabled={!assets.length} onClick={() => goto("gallery")}>Gallery</button>
           <button className={screen === "editor" ? "active" : ""} disabled={!assets.length} onClick={() => goto("editor")}>Editor</button>
         </div>
-        <Button variant="secondary" size="sm" disabled={processing || !scoped.length} onClick={runApply}>Apply preset</Button>
+        <Button variant="secondary" size="sm" disabled={!applyTargets.apply.length} onClick={runApply}
+          title={hasActive ? `Apply ${active.name}'s edit to ${applyTargets.apply.length} image(s)` : undefined}>Apply edit to {applyTargets.apply.length}</Button>
         <Button className="export-cta" size="sm" disabled={!exportQueue.length} onClick={() => setExportOpen(true)}><Download /> Export</Button>
       </div>}
       <span>{onImages && hasActive
@@ -1406,8 +1628,8 @@ export function MinimaWorkspace() {
           const asset = assetsRef.current.find((item) => item.id === replaceIntent.assetId);
           if (asset) {
             const free = newPlacement(asset.id, at
-              ? { ...asset.element, box: { ...asset.element.box, x: at.x - 25, y: at.y - 25, w: 50, h: 50 } }
-              : asset.element);
+              ? placedIn(asset, { x: at.x - 25, y: at.y - 25, w: 50, h: 50 }, { width: doc.width, height: doc.height })
+              : elementOf(asset, doc));
             setDoc((current) => ({ ...current, placements: [...current.placements, free] }));
             setCanvasSelection([placementKey(free.id)]);
           }

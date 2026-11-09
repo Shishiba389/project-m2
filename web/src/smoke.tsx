@@ -27,10 +27,10 @@ import {
 import { fullPageImage } from "@/src/image-geometry";
 
 const assets: Asset[] = [
-  { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: false, fixed: false, corrupt: false, element: fullPageImage() },
-  { id: 2, name: "b.jpg", kind: "beauty", format: "jpg", src: { w: 1600, h: 1600 }, processed: true, overflow: false, fixed: false, corrupt: false, element: fullPageImage() },
-  { id: 3, name: "c.png", kind: "bottle", format: "png", src: { w: 1801, h: 2600 }, processed: true, overflow: true, fixed: false, corrupt: false, element: fullPageImage() },
-  { id: 4, name: "d.webp", kind: "fashion", format: "webp", src: { w: 900, h: 900 }, processed: true, overflow: false, fixed: false, corrupt: true, element: fullPageImage() },
+  { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: true, corrupt: false, element: fullPageImage() },
+  { id: 2, name: "b.jpg", kind: "beauty", format: "jpg", src: { w: 1600, h: 1600 }, processed: true, corrupt: false, element: fullPageImage() },
+  { id: 3, name: "c.png", kind: "bottle", format: "png", src: { w: 1801, h: 2600 }, processed: true, corrupt: false, element: fullPageImage() },
+  { id: 4, name: "d.webp", kind: "fashion", format: "webp", src: { w: 900, h: 900 }, processed: true, corrupt: true, element: fullPageImage() },
 ];
 const doc = docFromPreset(presetById("zalando"));
 const target = docTarget(doc, PRESETS);
@@ -79,7 +79,7 @@ const occurrences = (html: string, needle: string) => html.split(needle).length 
 // images are gone: they had no file behind them and were the stand-ins showing
 // up in the gallery, the filmstrip and the export list.
 check("workspace shell, first run", <MinimaWorkspace />,
-  "Drag & Drop", "Start a resize batch", "Drop images here", "All changes saved", "no images");
+  "Import", "Start a resize batch", "Drop images here", "All changes saved", "no images");
 
 check("import screen", <ImportScreen policy="skip" onPolicy={noop} onFiles={noop} onFolders={noop} onCloud={noop} onDrop={noop} />,
   "Start a resize batch", "Drop images here", "Add files", "Add folders", "Import from cloud",
@@ -129,8 +129,8 @@ const multiHtml = check("editor multi-select", <Editor asset={assets[0]} assets=
   multi={{
     selection: ["asset-1", "asset-2"],
     items: [
-      { key: "asset-1", box: { ...assets[0].element.box, x: 10, y: 10, w: 30, h: 20 } },
-      { key: "asset-2", box: { ...assets[0].element.box, x: 50, y: 40, w: 30, h: 20 } },
+      { key: "asset-1", box: { ...fullPageImage().box, x: 10, y: 10, w: 30, h: 20 } },
+      { key: "asset-2", box: { ...fullPageImage().box, x: 50, y: 40, w: 30, h: 20 } },
     ],
     onSelect: noop, onGestureStart: noop, onWrite: noop, onGestureEnd: noop, onAlign: noop, onDistribute: noop,
   }}
@@ -149,10 +149,10 @@ const twiceHtml = check("editor two copies", <Editor asset={assets[0]} assets={a
   viewport={{ zoom: 0.2, panX: 40, panY: 20 }} onViewport={noop} compare={false}
   compareView="split" splitAt={50} overlay={100} guides={defaultGuides} target={target}
   canvasLayers={[
-    { key: "place-a", assetId: assets[0].id, placementId: "a", element: { ...assets[0].element, box: { ...assets[0].element.box, x: 5, y: 5, w: 40, h: 40 } } },
-    { key: "place-b", assetId: assets[0].id, placementId: "b", element: { ...assets[0].element, box: { ...assets[0].element.box, x: 55, y: 55, w: 40, h: 40 } } },
+    { key: "place-a", assetId: assets[0].id, placementId: "a", element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 5, y: 5, w: 40, h: 40 } } },
+    { key: "place-b", assetId: assets[0].id, placementId: "b", element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 55, y: 55, w: 40, h: 40 } } },
   ]}
-  activeLayer={{ key: "place-a", assetId: assets[0].id, placementId: "a", element: { ...assets[0].element, box: { ...assets[0].element.box, x: 5, y: 5, w: 40, h: 40 } } }}
+  activeLayer={{ key: "place-a", assetId: assets[0].id, placementId: "a", element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 5, y: 5, w: 40, h: 40 } } }}
   onElement={noop} onElementAction={noop} onElementStart={noop} onElementEnd={noop} onCropStart={noop} onCropDone={noop} onCropCancel={noop} onCropReset={noop} onSplit={noop} onChoose={noop} onImport={noop} onDrop={noop} onFit={noop} onToggleGrid={noop} onStep={noop} />,
   "canvas-scene");
 if (twiceHtml) {
@@ -191,7 +191,7 @@ check("editor frame content", <Editor asset={assets[0]} assets={assets} selected
   "content-edit", "content-edit-mask", "Frame content", "Scale content from nw", "Done", "Cancel", "Fill", "Fit");
 
 check("review", <Review assets={assets.slice(2)} target={target} onOpen={noop} onFix={noop} onFixAll={noop} onRetry={noop} />,
-  "Error Review", "Auto-fix scaling", "Re-run preset");
+  "Error Review", "Fix all", "Re-apply edit");
 
 check("presets", <PresetManager presets={PRESETS} activeId="zalando" onApply={noop} onCreate={noop}
   onEdit={noop} onDuplicate={noop} onDelete={noop} onShare={noop} />,
@@ -212,9 +212,9 @@ check("inspector", <Inspector doc={doc} target={target} asset={assets[0]} preset
   layerSelection={["asset-2"]} onLayerSelect={noop} onLayerReorder={noop}
   selection={{ label: "Hero shot", box: { x: 12, y: 8, w: 60, h: 45, rotation: 15, flipH: true, flipV: false, lockedRatio: true } }}
   onSelectionBox={noop} />,
-  "Resize Inspector", "Image fit alignment", "Guides", "Snap safe", "Canvas background",
-  "Overlay opacity", "Apply resize to", "Apply to 3 images",
-  "Lock canvas settings",
+  "Resize Inspector", "Align on page", "Guides", "Snap safe", "Page background",
+  "Overlay opacity", "edit to", "Apply to 3 images",
+  "Lock page settings",
   // The transform panel renders its derived pixel values, not raw percentages.
   "Transform", "Hero shot", "Angle", "Flip horizontally", "Unlock aspect ratio",
   // The layers panel is the scene graph, topmost first, with the selected
