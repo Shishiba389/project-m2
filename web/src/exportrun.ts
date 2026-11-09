@@ -17,9 +17,9 @@ import {
   type Asset, type Doc, type Format,
 } from "@/src/flow";
 import { fitInto, fullCrop, fullPageImage, type ImageBox, type ImageElement } from "@/src/image-geometry";
-import { applyPoint, compose, fromBox, identity, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
+import { applyPoint, compose, fromBox, identity, invert, rotation, scaling, translation, type Mat3 } from "@/src/mat3";
 import { attachImage, contentPageElement, createFrame } from "@/src/frame-geometry";
-import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
+import { estimatePeakBytes, resizeRgba, validateDimensions, type Resampling, type ResizeWindow } from "@/src/resize-core";
 import { encodeOutput } from "@/src/output-engine";
 
 export type Rect = { x: number; y: number; w: number; h: number };
@@ -45,6 +45,8 @@ export type FrameSpec = {
    * the image is the page's subject rather than one of several layers.
    */
   drawElement?: boolean;
+  /** "classic" (the default) is the certified MINIMA resampler; "high" is the opt-in quality mode. */
+  resampling?: Resampling;
 };
 
 /** One layer of the page: a free image, or a frame's content clipped by it. */
@@ -187,6 +189,34 @@ export function elementTransform(box: ImageBox, page: { width: number; height: n
   );
 }
 
+/**
+ * The part of an element's rendered picture that can reach the page, in the
+ * picture's own pixels - or null when none of it can.
+ *
+ * `render` is where the resampled picture is drawn before the element's
+ * rotation and mirror, `transform` is that rotation and mirror. The page is
+ * mapped back through it, so a turned picture keeps every pixel its corners
+ * sweep over. A turned or mirrored picture is drawn by the canvas's own
+ * filter, which reads a pixel or two either side: those keep a margin. An
+ * axis-aligned one is copied pixel for pixel, so its window is exact.
+ *
+ * A picture zoomed far past the page is mostly off it. Resampling all of it
+ * only to clip it away cost time and memory, and past 20,000 px a side the
+ * export refused it outright.
+ */
+export function visibleWindow(render: Rect, transform: Mat3, page: { width: number; height: number }): ResizeWindow | null {
+  const back = invert(transform) ?? identity();
+  const corners = [[0, 0], [page.width, 0], [0, page.height], [page.width, page.height]]
+    .map(([x, y]) => applyPoint(back, { x, y }));
+  const aligned = transform.a === 1 && transform.b === 0 && transform.c === 0 && transform.d === 1;
+  const margin = aligned ? 0 : 2;
+  const x0 = Math.max(0, Math.floor(Math.min(...corners.map((point) => point.x)) - render.x) - margin);
+  const y0 = Math.max(0, Math.floor(Math.min(...corners.map((point) => point.y)) - render.y) - margin);
+  const x1 = Math.min(render.w, Math.ceil(Math.max(...corners.map((point) => point.x)) - render.x) + margin);
+  const y1 = Math.min(render.h, Math.ceil(Math.max(...corners.map((point) => point.y)) - render.y) + margin);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+}
+
 /** Rotation and flip about a box's centre, shared by images and frames. */
 function transformAboutCentre(context: CanvasRenderingContext2D, box: ImageBox, page: { width: number; height: number }) {
   const matrix = elementTransform(box, page);
@@ -200,21 +230,14 @@ export { fitInto };
 export const encodableFormat = (format: Format): OutFormat =>
   (format === "tiff" ? "png" : format);
 
-// The scaler keeps several linear-light buffers in memory. Refuse a render
-// before allocating them instead of freezing the browser tab.
 /**
- * How much working memory one render may use.
+ * How much working memory one render may use: refuse a render before
+ * allocating it instead of freezing the browser tab.
  *
- * Measured, not guessed. The batch path already asks the browser for its own
- * heap limit and allows a render half of it; the exporter hard-coded 512 MB
- * instead, and 512 MB is not enough to export anything.
- *
- * The linear-light pipeline needs 36 bytes for every *source* pixel before it
- * has done any work - the 8-bit source and its `Float64Array` copy are alive
- * together - so a photograph the same size as the page it is being fitted
- * into already costs 464 MB. Every export of an ordinary product shot failed
- * with IMAGE_TOO_LARGE, which is what this cap was meant to prevent, not to
- * cause.
+ * Measured, not guessed. The batch path asks the browser for its own heap
+ * limit and allows a render half of it, and so does this. The resampler now
+ * streams, so a render costs about its 8-bit source and output - this cap is
+ * for the truly enormous, not for ordinary product shots.
  *
  * Only Chromium reports the limit, and a privacy setting can hide it there
  * too. Assuming a single gigabyte when it is missing refuses photographs that
@@ -230,7 +253,8 @@ function renderBudget() {
 /* ------------------------------------------------------------------ browser */
 
 export async function renderFramed(file: File, spec: FrameSpec, format: OutFormat, quality: number,
-  metadata: { dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" } = {}): Promise<Uint8Array> {
+  metadata: { dpi?: number; maxBytes?: number | null; profile?: "srgb" | "display-p3" | "rec709" } = {},
+  templates: LayerCache = new Map()): Promise<Uint8Array> {
   validateDimensions(spec.width, spec.height);
   const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   try {
@@ -260,37 +284,45 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
     context.clip();
     // Only the batch case draws from `element`: there the image is the page's
     // subject, underneath whatever else the page holds.
-    if (spec.drawElement !== false) drawLayer(context, bitmap, sourceContext, spec, spec.element);
+    if (spec.drawElement !== false) drawResampled(context, resampleLayer(bitmap, sourceContext, spec, spec.element));
     for (const layer of spec.layers) {
-      // The queued image is already decoded; every other layer needs its own.
+      // The queued image is already decoded and is different in every file.
+      // Every other layer is the template around it: the same pixels in the
+      // same place on every page, decoded and resampled once per run.
       const queued = layer.assetId === spec.queuedAssetId;
-      const source = queued ? bitmap : await createImageBitmap(layer.file, { imageOrientation: "from-image" });
-      try {
-        let layerContext = sourceContext;
-        if (!queued) {
-          const layerCanvas = document.createElement("canvas");
-          layerCanvas.width = source.width; layerCanvas.height = source.height;
-          const context2d = layerCanvas.getContext("2d", { willReadFrequently: true });
-          if (!context2d) throw new Error("2D canvas is unavailable");
-          context2d.drawImage(source, 0, 0);
-          layerContext = context2d;
+      let resampled: Resampled | undefined;
+      if (queued) resampled = resampleLayer(bitmap, sourceContext, spec, layer.element);
+      else {
+        const key = templateKey(layer, spec);
+        resampled = templates.get(key);
+        if (resampled === undefined) {
+          const source = await createImageBitmap(layer.file, { imageOrientation: "from-image" });
+          try {
+            const layerCanvas = document.createElement("canvas");
+            layerCanvas.width = source.width; layerCanvas.height = source.height;
+            const context2d = layerCanvas.getContext("2d", { willReadFrequently: true });
+            if (!context2d) throw new Error("2D canvas is unavailable");
+            context2d.drawImage(source, 0, 0);
+            resampled = resampleLayer(source, context2d, spec, layer.element);
+          } finally {
+            source.close?.();
+          }
+          templates.set(key, resampled);
         }
-        context.save();
-        if (layer.clip) {
-          // Clip in the frame's own rotated space, then draw the content back
-          // in page space: a canvas clip is fixed once set.
-          transformAboutCentre(context, layer.clip, spec);
-          const rect = boxPx(layer.clip, spec);
-          context.beginPath();
-          context.rect(rect.x, rect.y, rect.w, rect.h);
-          context.clip();
-          context.setTransform(1, 0, 0, 1, 0, 0);
-        }
-        drawLayer(context, source, layerContext, spec, layer.element);
-        context.restore();
-      } finally {
-        if (!queued) source.close?.();
       }
+      context.save();
+      if (layer.clip) {
+        // Clip in the frame's own rotated space, then draw the content back
+        // in page space: a canvas clip is fixed once set.
+        transformAboutCentre(context, layer.clip, spec);
+        const rect = boxPx(layer.clip, spec);
+        context.beginPath();
+        context.rect(rect.x, rect.y, rect.w, rect.h);
+        context.clip();
+        context.setTransform(1, 0, 0, 1, 0, 0);
+      }
+      drawResampled(context, resampled);
+      context.restore();
     }
     context.restore();
 
@@ -303,26 +335,39 @@ export async function renderFramed(file: File, spec: FrameSpec, format: OutForma
   }
 }
 
-/** Draw one image element onto the page with the editor's own geometry. */
-function drawLayer(
-  context: CanvasRenderingContext2D,
+/** A picture resampled for its place on the page, ready to draw - or null when none of it is on the page. */
+type Resampled = { canvas: HTMLCanvasElement; x: number; y: number; transform: Mat3 } | null;
+/**
+ * Template layers, resampled once per export run. Every file of a batch puts
+ * its own image into the same template; the frames, backdrops and logos
+ * around it are the same pixels in the same place on every page, and decoding
+ * and resampling them again for each file was most of a templated batch's time.
+ */
+export type LayerCache = Map<string, Resampled>;
+/** What a template layer's pixels depend on: its source, its geometry, the page and the resampler. */
+export const templateKey = (layer: Pick<Layer, "assetId" | "element">, spec: Pick<FrameSpec, "width" | "height" | "resampling">) =>
+  `${layer.assetId}|${spec.width}x${spec.height}|${spec.resampling ?? "classic"}|${JSON.stringify(layer.element)}`;
+
+/** Resample one image element for the page with the editor's own geometry. */
+function resampleLayer(
   bitmap: ImageBitmap,
   sourceContext: CanvasRenderingContext2D,
   spec: FrameSpec,
   element: ImageElement,
-) {
-  context.save();
-  transformAboutCentre(context, element.box, spec);
+): Resampled {
   const crop = element.crop ?? fullCrop();
   const sourceWidth = Math.max(1, Math.ceil((crop.right - crop.left) * bitmap.width));
   const sourceHeight = Math.max(1, Math.ceil((crop.bottom - crop.top) * bitmap.height));
   // The box is the picture: the cropped source fills it exactly, which is what
   // the preview draws, and the page or frame clips whatever overflows.
   const dest = boxPx(element.box, spec);
-  const renderWidth = Math.max(1, Math.round(dest.w));
-  const renderHeight = Math.max(1, Math.round(dest.h));
-  validateDimensions(renderWidth, renderHeight);
-  const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, renderWidth, renderHeight);
+  const render = { x: Math.round(dest.x), y: Math.round(dest.y), w: Math.max(1, Math.round(dest.w)), h: Math.max(1, Math.round(dest.h)) };
+  const transform = elementTransform(element.box, spec);
+  // Only the part of the picture that can land on the page is resampled; the
+  // pixels are the ones the whole picture would have had there.
+  const window = visibleWindow(render, transform, spec);
+  if (!window) return null;
+  const peakBytes = estimatePeakBytes(sourceWidth, sourceHeight, render.w, render.h, window);
   const budget = renderBudget();
   if (peakBytes > budget) {
     throw new Error(`IMAGE_TOO_LARGE: this edit needs about ${Math.ceil(peakBytes / 1_048_576)} MB of working memory, `
@@ -331,14 +376,27 @@ function drawLayer(
   const sourceX = Math.floor(crop.left * bitmap.width);
   const sourceY = Math.floor(crop.top * bitmap.height);
   const sourcePixels = sourceContext.getImageData(sourceX, sourceY, sourceWidth, sourceHeight);
-  const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, renderWidth, renderHeight);
+  const resized = resizeRgba({ width: sourceWidth, height: sourceHeight, data: sourcePixels.data }, render.w, render.h,
+    { window, quality: spec.resampling });
   const resizedCanvas = document.createElement("canvas");
-  resizedCanvas.width = renderWidth;
-  resizedCanvas.height = renderHeight;
-  const imageData = resizedCanvas.getContext("2d")!.createImageData(renderWidth, renderHeight);
+  resizedCanvas.width = resized.width;
+  resizedCanvas.height = resized.height;
+  const imageData = resizedCanvas.getContext("2d")!.createImageData(resized.width, resized.height);
   imageData.data.set(resized.data);
   resizedCanvas.getContext("2d")!.putImageData(imageData, 0, 0);
-  context.drawImage(resizedCanvas, Math.round(dest.x), Math.round(dest.y));
+  return { canvas: resizedCanvas, x: render.x + window.x, y: render.y + window.y, transform };
+}
+
+function drawResampled(context: CanvasRenderingContext2D, resampled: Resampled) {
+  if (!resampled) return;
+  const { transform } = resampled;
+  context.save();
+  context.transform(transform.a, transform.b, transform.c, transform.d, transform.tx, transform.ty);
+  // An axis-aligned picture is copied pixel for pixel and never filtered. A
+  // turned one is resampled by the canvas: at its best filter, not its
+  // default bilinear, which softens the whole picture it turns.
+  context.imageSmoothingQuality = "high";
+  context.drawImage(resampled.canvas, resampled.x, resampled.y);
   context.restore();
 }
 
@@ -371,6 +429,7 @@ export async function runExport(
   const entries: ZipEntry[] = [];
   const progress: ExportProgress = { done: 0, total: queue.length, current: "", failed: [] };
   const taken = new Set<string>();
+  const templates: LayerCache = new Map();
 
   for (const unit of queue) {
     const asset = unit.asset;
@@ -387,7 +446,7 @@ export async function runExport(
         ...spec, layers: unit.layers, element: unit.element, queuedAssetId: asset.id,
         drawElement: !unit.layers.some((layer) => layer.assetId === asset.id),
       };
-      const data = await renderFramed(asset.file, assetSpec, format, naming.quality, { ...naming, maxBytes });
+      const data = await renderFramed(asset.file, assetSpec, format, naming.quality, { ...naming, maxBytes }, templates);
       const custom = naming.customNames?.[asset.id]?.trim();
       let name = custom ? `${custom.replace(/\.[^/.]+$/, "")}.${format}` : outputName({ ...asset, format }, format, naming.suffix, naming.keepName);
       let n = 2;
@@ -523,6 +582,50 @@ export function demo() {
   const file = applyPoint(elementTransform(both, square1000), { x: unrotated.x + unrotated.w, y: unrotated.y });
   console.assert(Math.abs(screen.x - file.x) < 1e-9 && Math.abs(screen.y - file.y) < 1e-9,
     "a mirrored, rotated element exports turned the same way the editor shows it");
+
+  /* ------------------------------------------- only what reaches the page
+
+     A picture zoomed far past the page is resampled only where the page can
+     show it. The resampler guarantees the window's pixels are the whole
+     picture's (resize-core.test.ts); this is which window. */
+  const page = { width: 1000, height: 2000 };
+  const inside = { x: 100, y: 200, w: 500, h: 400 };
+  console.assert(JSON.stringify(visibleWindow(inside, identity(), page)) === JSON.stringify({ x: 0, y: 0, width: 500, height: 400 }),
+    "a picture on the page is rendered whole");
+  const zoomed = { x: -5000, y: -3000, w: 20_000, h: 15_000 };
+  console.assert(JSON.stringify(visibleWindow(zoomed, identity(), page)) === JSON.stringify({ x: 5000, y: 3000, width: 1000, height: 2000 }),
+    "a 300-megapixel zoom renders only the page it covers - exactly, with no margin");
+  console.assert(visibleWindow({ x: 1200, y: 0, w: 300, h: 300 }, identity(), page) === null, "a picture off the page is not rendered at all");
+  const half = visibleWindow({ x: -250, y: 1900, w: 500, h: 500 }, identity(), page)!;
+  console.assert(half.x === 250 && half.y === 0 && half.width === 250 && half.height === 100, "a picture half off a corner keeps the corner");
+  // Turned 45 degrees about its centre, the page's corners sweep a larger
+  // square of the picture, and the canvas filter needs a pixel either side.
+  const turnedBox = { ...fullPageImage().box, x: -150, y: -100, w: 400, h: 300, rotation: 45 };
+  const turnedRender = boxPx(turnedBox, page);
+  const turnedWindow = visibleWindow({ x: turnedRender.x, y: turnedRender.y, w: turnedRender.w, h: turnedRender.h },
+    elementTransform(turnedBox, page), page)!;
+  for (const corner of [{ x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 0, y: 2000 }, { x: 1000, y: 2000 }]) {
+    const local = applyPoint(invert(elementTransform(turnedBox, page))!, corner);
+    console.assert(local.x - turnedRender.x >= turnedWindow.x + 1 && local.x - turnedRender.x <= turnedWindow.x + turnedWindow.width - 1
+      && local.y - turnedRender.y >= turnedWindow.y + 1 && local.y - turnedRender.y <= turnedWindow.y + turnedWindow.height - 1,
+      "a turned picture keeps every pixel the page's corners reach, with a margin for the filter");
+  }
+  console.assert(turnedWindow.width * turnedWindow.height < turnedRender.w * turnedRender.h, "and still far less than all of it");
+
+  // A template layer is resampled once per run, so its key must name every
+  // input of its pixels - and nothing else, or nothing would ever be reused.
+  const logo = { assetId: 7, element: { ...fullPageImage(), box: { ...fullPageImage().box, x: 5, w: 20, h: 10 } } };
+  const pageSpec = { width: 1000, height: 2000 };
+  console.assert(templateKey(logo, pageSpec) === templateKey({ ...logo, element: structuredClone(logo.element) }, pageSpec),
+    "the same template layer on the next file is a cache hit");
+  console.assert(templateKey(logo, pageSpec) === templateKey(logo, { ...pageSpec, resampling: "classic" }), "classic is the default resampler");
+  console.assert(new Set([
+    templateKey(logo, pageSpec),
+    templateKey({ ...logo, assetId: 8 }, pageSpec),
+    templateKey({ ...logo, element: { ...logo.element, box: { ...logo.element.box, x: 6 } } }, pageSpec),
+    templateKey(logo, { width: 1000, height: 2001 }),
+    templateKey(logo, { ...pageSpec, resampling: "high" }),
+  ]).size === 5, "a different source, place, page or resampler is a different layer");
 
   /* ------------------------------------------------ the stack reaches the file
 

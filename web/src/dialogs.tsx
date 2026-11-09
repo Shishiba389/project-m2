@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Slider } from "@/components/ui/slider";
 import { EXPORT_ZIP, type ExportProgress } from "@/src/exportrun";
 import { megabytes, outputName, type Asset, type Format, type Preset } from "@/src/flow";
+import type { Resampling } from "@/src/resize-core";
 
 export type ExportOptions = {
   format: Format;
@@ -19,11 +20,14 @@ export type ExportOptions = {
   maxBytes: number | null;
   selectedIds: number[] | null;
   customNames: Record<number, string>;
+  /** Missing in workflows saved before it existed, which read as classic. */
+  resampling?: Resampling;
 };
 export type ExportWorkflow = { id: string; name: string; options: ExportOptions };
 
 export const defaultExportOptions: ExportOptions = {
   format: "png", quality: 92, profile: "srgb", keepName: true, suffix: "_resized", dpi: 72, maxBytes: null, selectedIds: null, customNames: {},
+  resampling: "classic",
 };
 
 export const SHORTCUTS: [string, string][] = [
@@ -89,6 +93,15 @@ export function ExportDialog({ open, onOpenChange, queue, files, options, canvas
         </Select>
         <div className="slider-label"><span>Quality</span><strong>{options.format === "png" ? "lossless" : `${options.quality}%`}</strong></div>
         <Slider value={[options.quality]} onValueChange={([value]) => onOptions({ ...options, quality: value })} disabled={options.format === "png"} />
+        {/* Classic stays the default: it is the desktop app's resampler, pixel for pixel. */}
+        <label className="field-label" htmlFor="resampling">Resampling</label>
+        <Select value={options.resampling ?? "classic"} onValueChange={(value) => onOptions({ ...options, resampling: value as Resampling })}>
+          <SelectTrigger id="resampling" className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent><SelectItem value="classic">MINIMA classic</SelectItem><SelectItem value="high">High quality</SelectItem></SelectContent>
+        </Select>
+        <p className="inspector-note">{options.resampling === "high"
+          ? "Less moiré on fine patterns and no halo along edges. About twice as slow, and the pixels differ from MINIMA desktop."
+          : "The certified resampler: the same pixels as MINIMA desktop."}</p>
         <label className="field-label">Color profile</label>
         <Select value={options.profile} onValueChange={(value) => onOptions({ ...options, profile: value as ExportOptions["profile"] })}>
           <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>

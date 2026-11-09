@@ -15,7 +15,7 @@
 
 import { begin } from "@/src/selfcheck";
 import { encodeOutput } from "@/src/output-engine";
-import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
+import { estimatePeakBytes, resizeRgba, validateDimensions, type Resampling } from "@/src/resize-core";
 import { detectSubject, type Subject } from "@/src/subject";
 
 export type OutFormat = "png" | "jpg" | "webp";
@@ -32,6 +32,8 @@ export type BatchOutput = {
   dpi: number;
   maxBytes: number | null;
   jpegBackground: string;
+  /** "classic" (the default) is the certified MINIMA resampler; "high" is the opt-in quality mode. */
+  resampling?: Resampling;
 };
 
 export type BatchSource = {
@@ -55,7 +57,7 @@ export type BatchSource = {
 // Nothing is resized in this pass, so the default suffix must not claim it was.
 export const defaultOutput: BatchOutput = {
   width: 1801, height: 2600, format: "png", quality: 92, suffix: "_resized", flatten: false,
-  dpi: 72, maxBytes: null, jpegBackground: "#ffffff",
+  dpi: 72, maxBytes: null, jpegBackground: "#ffffff", resampling: "classic",
 };
 
 const IMAGE_PATTERN = /\.(png|jpe?g|webp|avif|gif|bmp|tiff?)$/i;
@@ -110,6 +112,9 @@ async function faintnessOf(bitmap: ImageBitmap, edge = 32) {
     : Object.assign(document.createElement("canvas"), { width, height });
   const context = (canvas as HTMLCanvasElement).getContext("2d", { willReadFrequently: true });
   if (!context) return false;
+  // Averaged, not point-sampled: at the default quality a 32 px sample of a
+  // photograph reads 1 pixel in 100 and can step over a thin dark product.
+  context.imageSmoothingQuality = "high";
   context.drawImage(bitmap, 0, 0, width, height);
   return isFaint(context.getImageData(0, 0, width, height).data);
 }
@@ -141,12 +146,16 @@ async function thumbnailOf(bitmap: ImageBitmap, maxEdge = 320) {
     const canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas is unavailable");
+    // A thumbnail is a reduction of 10x or more; at the default quality that
+    // shimmers with moire on fabric and fine print.
+    context.imageSmoothingQuality = "high";
     context.drawImage(bitmap, 0, 0, width, height);
     return canvas.convertToBlob({ type: "image/webp", quality: 0.82 });
   }
   const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("2D canvas is unavailable");
+  context.imageSmoothingQuality = "high";
   context.drawImage(bitmap, 0, 0, width, height);
   return new Promise<Blob>((resolve, reject) => canvas.toBlob(
     (blob) => blob ? resolve(blob) : reject(new Error("thumbnail encoding failed")), "image/webp", 0.82));
@@ -373,7 +382,8 @@ export async function renderOne(source: BatchSource, output: BatchOutput): Promi
     if (!sourceContext) throw new Error("2D canvas is unavailable");
     sourceContext.drawImage(bitmap, 0, 0);
     const sourcePixels = sourceContext.getImageData(0, 0, bitmap.width, bitmap.height);
-    const resized = resizeRgba({ width: bitmap.width, height: bitmap.height, data: sourcePixels.data }, output.width, output.height);
+    const resized = resizeRgba({ width: bitmap.width, height: bitmap.height, data: sourcePixels.data }, output.width, output.height,
+      { quality: output.resampling });
     const canvas = document.createElement("canvas");
     canvas.width = output.width; canvas.height = output.height;
     const context = canvas.getContext("2d");

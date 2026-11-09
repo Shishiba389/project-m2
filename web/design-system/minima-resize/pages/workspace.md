@@ -73,5 +73,7 @@ The editor's geometry now follows `Engine/ui_ux_architecture_for_affine_2d_edito
 - Every drag has a keyboard or single-pointer alternative, including layer reordering (Alt + arrows).
 - Minimum 24×24 CSS-pixel web pointer targets, expanded to 44px on compact touch layouts.
 - Geometry is owned by the document, never by the DOM: nothing may size `.canvas-scene`, whose measured box is the origin every pointer coordinate is derived from.
-- The MINIMA resampler is bit-exact and guarded by checksums. Rotation and mirroring reach the file through a rigid canvas transform layered on top of it, never by resampling twice.
+- The MINIMA resampler is bit-exact and guarded by checksums. Rotation and mirroring reach the file through a rigid canvas transform layered on top of it (at the canvas's high smoothing quality), never by resampling twice.
+- The resampler streams a few rows at a time and can compute any window of its output with the pixels the whole resize would have there. Export renders only the part of each picture that reaches the page, so a zoomed-in image costs the page, not the enlargement; template layers are resampled once per export run.
+- Resampling is a choice in Export and Batch: **MINIMA classic** (the default, desktop parity) or **High quality** (opt-in; Catmull–Rom widened by the reduction factor plus anti-ringing: about 3–4× less moiré past the new resolution and no edge halos, roughly twice as slow, different pixels from desktop).
 - No dependency on ChatGPT Sites, Vinext, Cloudflare, or a hosted runtime.

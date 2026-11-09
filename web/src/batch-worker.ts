@@ -15,7 +15,8 @@ self.onmessage = async (event: MessageEvent<Request>) => {
     if (!sourceContext) throw new Error("Offscreen 2D canvas is unavailable");
     sourceContext.drawImage(bitmap, 0, 0); bitmap.close?.();
     const source = sourceContext.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-    const resized = resizeRgba({ width: sourceCanvas.width, height: sourceCanvas.height, data: source.data }, output.width, output.height);
+    const resized = resizeRgba({ width: sourceCanvas.width, height: sourceCanvas.height, data: source.data }, output.width, output.height,
+      { quality: output.resampling });
     const canvas = new OffscreenCanvas(output.width, output.height);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Offscreen 2D canvas is unavailable");
