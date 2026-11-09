@@ -1,6 +1,6 @@
 import { begin } from "@/src/selfcheck";
 import {
-  clampPan, clampZoom, fitViewport, fitZoom, MAX_ZOOM, MIN_ZOOM, matrix, pageRect, pageToScreen,
+  clampPan, clampZoom, FIT_MARGIN, fitViewport, fitZoom, MAX_ZOOM, MIN_ZOOM, matrix, pageRect, pageToScreen,
   pan, rulerTicks, screenToPage, tickStep, zoomAt, zoomCentred, zoomToRect, type Viewport,
 } from "@/src/viewport";
 
@@ -103,5 +103,18 @@ console.assert(rulerTicks(fitted, page, "y", 0).length === 0, "and neither does 
 // page and not the window.
 const slid = rulerTicks({ ...fitted, panX: fitted.panX + 37 }, page, "x", view.width);
 console.assert(Math.abs(slid.find((tick) => tick.value === 0)!.at - (fitted.panX + 37)) < 1e-9, "the ruler follows the page as it pans");
+
+// A toolbar covers the top of the pane: fitting and framing happen below it,
+// so the page's top edge and the selection's handles are never underneath.
+{
+  const pane = { width: 1000, height: 800, top: 74 };
+  const fitted = fitViewport({ width: 1800, height: 2600 }, pane);
+  console.assert(fitted.panY >= 74 + FIT_MARGIN - 1e-9, "the fitted page starts below the covered band");
+  console.assert(Math.abs(fitted.panY + 2600 * fitted.zoom - (800 - FIT_MARGIN)) < 1e-6, "and still uses the height left beneath it");
+  const open = fitViewport({ width: 1800, height: 2600 }, { width: 1000, height: 800 });
+  console.assert(open.zoom > fitted.zoom, "without the band the same page fits larger");
+  const framed = zoomToRect({ x: 40, y: 0, w: 20, h: 10 }, { width: 1800, height: 2600 }, pane);
+  console.assert(Math.abs(framed.panY + 0.05 * 2600 * framed.zoom - (74 + (800 - 74) / 2)) < 1e-6, "a framed selection is centred in the clear area");
+}
 
 finish("viewport.test.ts");

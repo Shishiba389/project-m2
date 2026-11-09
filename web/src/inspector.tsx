@@ -9,12 +9,21 @@ import { Switch } from "@/components/ui/switch";
 import type { ImageBox } from "@/src/image-geometry";
 import { LayersPanel, type LayerRow } from "@/src/layers";
 import type { Guides } from "@/src/screens";
-import { ratioLabel, type Align, type Asset, type Doc, type Preset, type Scope } from "@/src/flow";
+import { ratioLabel, type Align, type Asset, type Doc, type Fit, type Preset, type Scope } from "@/src/flow";
+import { defaultApplyOptions, type ApplyOptions } from "@/src/editor-engine";
 
 const ALIGNMENTS: Align[] = ["top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right"];
 
 /** What the transform panel is pointed at: the free image, or a frame. */
-export type Selection = { label: string; box: ImageBox };
+export type Selection = {
+  label: string; box: ImageBox;
+  /**
+   * What the editor knows about where the product is in this picture: the
+   * sentence, and whether a product was found - which decides whether the
+   * line carries the dashed swatch the canvas outline is drawn with.
+   */
+  product?: { text: string; found: boolean };
+};
 
 /**
  * Input props for a number the user types rather than drags.
@@ -92,6 +101,11 @@ function TransformPanel({ selection, page, onBox }: {
     <div className="field-label transform-heading">
       <span>Transform</span><strong title={selection.label}>{selection.label}</strong>
     </div>
+    {selection.product && <p className={`product-note ${selection.product.found ? "found" : ""}`}>
+      {/* The swatch is the canvas outline itself, scaled down, so the line explains the mark. */}
+      {selection.product.found && <span className="product-swatch" aria-hidden="true" />}
+      <span>{selection.product.text}</span>
+    </p>}
     <div className="transform-grid">
       <NumberField label="X" unit="px" value={toPx(box.x, page.width)} onCommit={(value) => onBox({ ...box, x: toPercent(value, page.width) })} />
       <NumberField label="Y" unit="px" value={toPx(box.y, page.height)} onCommit={(value) => onBox({ ...box, y: toPercent(value, page.height) })} />
@@ -117,7 +131,25 @@ export function Inspector({
   layers, layerSelection = [], onLayerSelect, onLayerReorder,
   onPreset, onDoc, onGuides, onScope, onOverlay, onApply, onFocus, onClose, onResetGuides, onSelectionBox,
   onGestureStart = () => {}, onGestureEnd = () => {},
+  activeFit, activeAlign, onFit, onAlign,
+  applyOptions = defaultApplyOptions, onApplyOptions = () => {}, applyCount, keptCount = 0, referenceName = "", measuredOnProduct = false,
 }: {
+  /** What an apply carries over from the reference image, and to how many images. */
+  applyOptions?: ApplyOptions;
+  /** Takes an updater, so two quick ticks in a row both land instead of the second undoing the first. */
+  onApplyOptions?: (update: (current: ApplyOptions) => ApplyOptions) => void;
+  applyCount?: number; keptCount?: number; referenceName?: string;
+  /** True when sizes are measured on the reference's product rather than its whole picture. */
+  measuredOnProduct?: boolean;
+  /**
+   * The page layout and anchor of the selected image, to light the buttons.
+   * Null once the image has been sized or moved by hand, so nothing claims a
+   * layout the image is no longer in.
+   */
+  activeFit?: Fit | null; activeAlign?: Align | null;
+  /** Lay the selected image out against the whole page, and make that the page's rule. */
+  onFit?: (fit: Fit) => void;
+  onAlign?: (align: Align) => void;
   /** Open and close a document transaction, so one drag is one undo step. */
   onGestureStart?: () => void;
   onGestureEnd?: () => void;
@@ -141,7 +173,31 @@ export function Inspector({
 }) {
   /** Canvas rules stay independent from each image's editable geometry. */
   const patchDoc = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
+  const fitNow = !(selection && onSelectionBox) || activeFit === undefined ? doc.fit : activeFit;
+  const alignNow = !(selection && onSelectionBox) || activeAlign === undefined ? doc.align : activeAlign;
+  const chooseFit = onFit ?? ((fit: Fit) => patchDoc({ fit }));
+  const chooseAlign = onAlign ?? ((align: Align) => patchDoc({ align }));
   const reframe = (patch: Partial<Doc>) => onDoc((current) => ({ ...current, ...patch }));
+  /** On the canvas the fit and alignment act on the selected image; elsewhere they are the page's rule. */
+  const editingImage = Boolean(selection && onSelectionBox);
+  const fitAndAlign = (fitTitle: string, alignTitle: string) => <section className="inspector-section fit-section" aria-label={fitTitle}>
+    <div className="section-title" id="fit-title">{fitTitle}</div>
+    <div className="segmented" role="group" aria-labelledby="fit-title">{(["Fit", "Fill", "Stretch"] as const).map((mode) =>
+      <button key={mode} className={fitNow === mode ? "active" : ""} aria-pressed={fitNow === mode}
+        title={mode === "Fit" ? "Fit the whole image inside the page" : mode === "Fill" ? "Cover the whole page" : "Stretch to exactly the page"}
+        onClick={() => editingImage ? chooseFit(mode) : patchDoc({ fit: mode })}>{mode}</button>)}
+    </div>
+    <div className="section-title" id="align-title">{alignTitle}</div>
+    <div className="alignment-grid" role="group" aria-labelledby="align-title">{ALIGNMENTS.map((position) =>
+      <button key={position} className={position === alignNow ? "active" : ""} aria-pressed={position === alignNow}
+        aria-label={`Align ${position.replace("-", " ")}`} title={`Align ${position.replace("-", " ")}`}
+        disabled={Boolean(doc.templateLocked)} onClick={() => editingImage ? chooseAlign(position) : patchDoc({ align: position })}><span /></button>)}
+    </div>
+  </section>;
+  /** The options as words, for the folded summary: what the button will carry over. */
+  const applied = [
+    applyOptions.size && "Size & position", applyOptions.rotation && "Rotation & flip", applyOptions.crop && "Crop",
+  ].filter(Boolean).concat(applyOptions.overwriteManual ? ["incl. hand-adjusted"] : []) as string[];
   const setDimension = (edge: "width" | "height", value: number) => onDoc((current) => {
     if (!Number.isFinite(value) || value <= 0) return current;
     return edge === "width"
@@ -159,9 +215,9 @@ export function Inspector({
     <div className="inspector-body">
       {selection && onSelectionBox && <TransformPanel selection={selection} page={{ width: doc.width, height: doc.height }} onBox={onSelectionBox} />}
 
-      {/* The scene graph, as a list (§23). It sits under the transform panel
-          because both describe the selection rather than the batch, and above
-          the preset because you reach for it more often. */}
+      {editingImage && fitAndAlign("Fit to page", "Align on page")}
+
+      {/* The scene graph, as a list (§23). */}
       {layers && onLayerSelect && onLayerReorder && <section className="layers-panel" aria-label="Layers">
         <div className="field-label layers-heading">
           <span>Layers</span><strong>{layers.length}</strong>
@@ -169,92 +225,115 @@ export function Inspector({
         <LayersPanel rows={layers} selection={layerSelection} onSelect={onLayerSelect} onReorder={onLayerReorder} />
       </section>}
 
-      <label className="field-label" htmlFor="preset">Preset</label>
-      <Select value={doc.presetId} onValueChange={onPreset}>
-        <SelectTrigger id="preset" className="w-full"><SelectValue /></SelectTrigger>
-        <SelectContent>{presets.map((preset) => <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>)}</SelectContent>
-      </Select>
+      {/* The page every image is laid out on: set once for the batch. */}
+      <section className="inspector-section page-section" aria-label="Page">
+        <div className="section-title">Page</div>
+        {/* Away from the canvas these set the rule for every image nobody has placed by hand. */}
+        {!editingImage && fitAndAlign("Fit images to the page", "Align images on the page")}
+        <label className="field-label" htmlFor="preset">Preset</label>
+        <Select value={doc.presetId} onValueChange={onPreset}>
+          <SelectTrigger id="preset" className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>{presets.map((preset) => <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>)}</SelectContent>
+        </Select>
 
-      <label className="field-label">Canvas dimensions</label>
-      <div className="dimension-row">
-        <input aria-label="Canvas width" type="number" min={1} {...useTypedNumber(doc.width, (value) => setDimension("width", value))} />
-        <span>×</span>
-        <input aria-label="Canvas height" type="number" min={1} {...useTypedNumber(doc.height, (value) => setDimension("height", value))} />
-        <span>px</span>
-      </div>
-      <label className="check-row">
-        <Checkbox checked={doc.lock} onCheckedChange={(value) => onDoc((current) => ({ ...current, lock: Boolean(value), ratio: current.width / current.height }))} />
-        Aspect ratio lock · {ratioLabel(doc.width, doc.height)}
-      </label>
-      <label className="check-row template-lock-row">
-        <Checkbox checked={Boolean(doc.templateLocked)} onCheckedChange={(value) => onDoc((current) => ({ ...current, templateLocked: Boolean(value) }))} />
-        Lock canvas settings
-      </label>
-      {doc.templateLocked && <p className="inspector-note">Canvas settings are locked. Image editing, import and export remain available.</p>}
-
-      <label className="field-label">How the image fits the page</label>
-      <div className="segmented">{(["Fit", "Fill", "Stretch"] as const).map((mode) =>
-        <button key={mode} className={doc.fit === mode ? "active" : ""} onClick={() => patchDoc({ fit: mode })}>{mode}</button>)}
-      </div>
-
-      <label className="field-label">Image fit alignment</label>
-      <div className="alignment-grid">{ALIGNMENTS.map((position) =>
-        <button key={position} className={position === doc.align ? "active" : ""} aria-label={`Align ${position.replace("-", " ")}`} title={`Align ${position.replace("-", " ")}`}
-          disabled={Boolean(doc.templateLocked)} onClick={() => onDoc((current) => ({ ...current, align: position }))}><span /></button>)}
-      </div>
-
-      <div className="slider-label"><span>Safe area · vertical</span><strong>{doc.safeY.toFixed(2)}%</strong></div>
-      <Slider value={[doc.safeY]} max={30} step={0.5}
-        onValueChange={([value]) => { onGestureStart(); reframe({ safeY: value }); }} onValueCommit={onGestureEnd} />
-      <div className="slider-label"><span>Safe area · horizontal</span><strong>{doc.safeX.toFixed(2)}%</strong></div>
-      <Slider value={[doc.safeX]} max={30} step={0.01}
-        onValueChange={([value]) => { onGestureStart(); reframe({ safeX: value }); }} onValueCommit={onGestureEnd} />
-
-      {/* Panel 9: the split view's overlay strength. */}
-      {compare && <>
-        <div className="slider-label"><span>Overlay opacity</span><strong>{overlay}%</strong></div>
-        <Slider value={[overlay]} onValueChange={([value]) => onOverlay(value)} max={100} step={1} />
-      </>}
-
-
-      {/* Guides and background are set once for a batch, not per image, so they
-          collapse out of the way. <details> needs no state and no library. */}
-      <details className="inspector-fold">
-        <summary>Guides &amp; background</summary>
-        <div className="guide-grid">
-          {([["grid", "Grid"], ["rulers", "Rulers"], ["snapGrid", "Snap grid"], ["snapSafe", "Snap safe"]] as [keyof Guides, string][])
-            .map(([key, label]) => <label key={key} className="setting-line compact"><span>{label}</span>
-              <Switch checked={guides[key]} onCheckedChange={(value) => onGuides({ ...guides, [key]: value })} />
-            </label>)}
+        <label className="field-label">Size</label>
+        <div className="dimension-row">
+          <input aria-label="Canvas width" type="number" min={1} {...useTypedNumber(doc.width, (value) => setDimension("width", value))} />
+          <span>×</span>
+          <input aria-label="Canvas height" type="number" min={1} {...useTypedNumber(doc.height, (value) => setDimension("height", value))} />
+          <span>px</span>
         </div>
-        <label className="field-label" htmlFor="canvas-bg">Canvas background</label>
-        <div className="color-row">
-          <input id="canvas-bg" type="color" value={doc.background} onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
-          <input className="export-input" value={doc.background} aria-label="Background hex"
-            onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
-        </div>
-        <Button variant="outline" size="sm" onClick={onResetGuides}>Reset guides</Button>
-      </details>
+        <label className="check-row">
+          <Checkbox checked={doc.lock} onCheckedChange={(value) => onDoc((current) => ({ ...current, lock: Boolean(value), ratio: current.width / current.height }))} />
+          Keep ratio · {ratioLabel(doc.width, doc.height)}
+        </label>
+        <label className="check-row template-lock-row">
+          <Checkbox checked={Boolean(doc.templateLocked)} onCheckedChange={(value) => onDoc((current) => ({ ...current, templateLocked: Boolean(value) }))} />
+          Lock page settings
+        </label>
+        {doc.templateLocked && <p className="inspector-note">Page settings are locked. Image editing, import and export remain available.</p>}
+
+        <div className="slider-label"><span>Safe area · top and bottom</span><strong>{doc.safeY.toFixed(1)}%</strong></div>
+        <Slider value={[doc.safeY]} max={30} step={0.5} aria-label="Safe area, top and bottom"
+          onValueChange={([value]) => { onGestureStart(); reframe({ safeY: value }); }} onValueCommit={onGestureEnd} />
+        <div className="slider-label"><span>Safe area · left and right</span><strong>{doc.safeX.toFixed(1)}%</strong></div>
+        <Slider value={[doc.safeX]} max={30} step={0.01} aria-label="Safe area, left and right"
+          onValueChange={([value]) => { onGestureStart(); reframe({ safeX: value }); }} onValueCommit={onGestureEnd} />
+
+        {/* Panel 9: the split view's overlay strength. */}
+        {compare && <>
+          <div className="slider-label"><span>Overlay opacity</span><strong>{overlay}%</strong></div>
+          <Slider value={[overlay]} onValueChange={([value]) => onOverlay(value)} max={100} step={1} aria-label="Overlay opacity" />
+        </>}
+
+        {/* Guides and background are set once for a batch, not per image, so they
+            collapse out of the way. <details> needs no state and no library. */}
+        <details className="inspector-fold">
+          <summary>Guides &amp; background</summary>
+          <div className="guide-grid">
+            {([["grid", "Grid"], ["rulers", "Rulers"], ["snapGrid", "Snap grid"], ["snapSafe", "Snap safe"]] as [keyof Guides, string][])
+              .map(([key, label]) => <label key={key} className="setting-line compact"><span>{label}</span>
+                <Switch checked={guides[key]} onCheckedChange={(value) => onGuides({ ...guides, [key]: value })} />
+              </label>)}
+          </div>
+          <label className="field-label" htmlFor="canvas-bg">Page background</label>
+          <div className="color-row">
+            <input id="canvas-bg" type="color" value={doc.background} onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
+            <input className="export-input" value={doc.background} aria-label="Background hex"
+              onChange={(event) => onDoc((current) => ({ ...current, background: event.target.value }))} />
+          </div>
+          <Button variant="outline" size="sm" onClick={onResetGuides}>Reset guides</Button>
+        </details>
+      </section>
 
       <button className="focus-mode-button" onClick={onFocus}><Expand /> Focus mode <kbd>Ctrl ⇧ F</kbd></button>
       <div className="engine-note"><Sparkles aria-hidden="true" /><div><strong>MINIMA Engine</strong><span>Scale-aware bicubic · linear light</span></div></div>
     </div>
+    {/* Edit one, apply to all (§22-29). The image open in the editor is the
+        reference; what it carries over is a choice, and images the user has
+        adjusted by hand are left alone unless they say otherwise (§38). */}
     <div className="inspector-footer">
-      <label className="field-label">Apply resize to</label>
-      <div className="scope-list" role="radiogroup" aria-label="Apply resize to">
-        {([["current", "Current image"], ["selected", `Selected images (${selectedCount})`], ["all", `All images (${totalCount})`]] as [Scope, string][]).map(([value, label]) =>
-          <button key={value} role="radio" aria-checked={scope === value} className={scope === value ? "active" : ""} onClick={() => onScope(value)}><span />{label}</button>)}
+      <div className="apply-heading" id="apply-title">
+        Apply {referenceName ? <strong title={referenceName}>{referenceName}</strong> : "this image"}'s edit to
       </div>
+      <div className="segmented apply-scope" role="radiogroup" aria-labelledby="apply-title">
+        {([["selected", `Selected · ${selectedCount}`], ["all", `All · ${totalCount}`]] as [Scope, string][]).map(([value, label]) =>
+          <button key={value} role="radio" aria-checked={scope === value} className={scope === value ? "active" : ""} onClick={() => onScope(value)}>{label}</button>)}
+      </div>
+      {/* What travels is a choice, but one made rarely: it folds behind a
+          summary of itself, so the panel keeps the inspector's room for the
+          image and still says exactly what the button will do. */}
+      <details className="apply-options">
+        <summary>
+          <span className="apply-summary">{applied.length ? applied.join(" · ") : "Nothing chosen"}</span>
+          <span className="apply-change">Change</span>
+        </summary>
+        <div className="apply-option-list" role="group" aria-label="What to apply">
+          {([["size", "Size & position"], ["rotation", "Rotation & flip"], ["crop", "Crop (same fractions)"]] as [keyof ApplyOptions, string][]).map(([key, label]) =>
+            <label key={key} className="check-row">
+              <Checkbox checked={applyOptions[key]} onCheckedChange={(value) => onApplyOptions((current) => ({ ...current, [key]: Boolean(value) }))} />{label}
+            </label>)}
+          <label className="check-row">
+            <Checkbox checked={applyOptions.overwriteManual} onCheckedChange={(value) => onApplyOptions((current) => ({ ...current, overwriteManual: Boolean(value) }))} />
+            Also change images adjusted by hand{keptCount > 0 && !applyOptions.overwriteManual ? ` (${keptCount})` : ""}
+          </label>
+          {applyOptions.size && <p className="inspector-note">{measuredOnProduct
+            ? "Sizes are measured on each product, so different white margins do not change how big it looks."
+            : "Sizes are measured on the whole picture: no plain background to find the product on."}</p>}
+        </div>
+      </details>
       {processing && <div className="processing"><Progress value={progress} /><span>Processing {progress}%</span></div>}
-      <Button onClick={onApply} disabled={processing || !scopeCount} className="apply-button">
-        {processing
-          ? "Processing…"
-          : scopeCount === 0
-            // An empty selection with the Selected scope is otherwise a dead
-            // end: a disabled button reading "Apply to 0 images".
-            ? "Select images to apply"
-            : `Apply to ${scopeCount} image${scopeCount === 1 ? "" : "s"}`}
-      </Button>
+      {(() => {
+        const count = applyCount ?? scopeCount;
+        return <Button onClick={onApply} disabled={processing || !count || !applied.length} className="apply-button"
+          title={measuredOnProduct ? "Measured on each image's product" : undefined}>
+          {!applied.length ? "Choose what to apply"
+            : count > 0 ? `Apply to ${count} image${count === 1 ? "" : "s"}`
+            // An empty target list is otherwise a dead end: a disabled
+            // button reading "Apply to 0 images".
+            : keptCount > 0 ? "Only images adjusted by hand left" : "Select images to apply to"}
+        </Button>;
+      })()}
     </div>
   </aside>;
 }

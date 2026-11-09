@@ -16,6 +16,19 @@ import { applyPoint, invert, type Mat3, type Point } from "@/src/mat3";
 
 export type Viewport = { zoom: number; panX: number; panY: number };
 export type Size = { width: number; height: number };
+/**
+ * The pane, and the band at its top that something else already covers.
+ *
+ * The editor's toolbar floats over the top of the pane. Fitting the page into
+ * the whole pane put the page's top edge - and the selection's rotate handle -
+ * underneath it, so fit and frame-the-selection centre in what is left below
+ * the band instead. Pan limits and the rulers still use the whole pane.
+ */
+export type View = Size & { top?: number };
+const usable = (view: View) => {
+  const top = Math.min(Math.max(0, view.top ?? 0), Math.max(0, view.height - 1));
+  return { top, width: view.width, height: view.height - top };
+};
 
 export const MIN_ZOOM = 0.02;
 export const MAX_ZOOM = 8;
@@ -29,21 +42,23 @@ export const matrix = (viewport: Viewport): Mat3 =>
   ({ a: viewport.zoom, b: 0, c: 0, d: viewport.zoom, tx: viewport.panX, ty: viewport.panY });
 
 /** The zoom at which the whole page is visible with a margin around it. */
-export function fitZoom(page: Size, view: Size, margin = FIT_MARGIN) {
-  if (page.width <= 0 || page.height <= 0 || view.width <= 0 || view.height <= 0) return 1;
+export function fitZoom(page: Size, view: View, margin = FIT_MARGIN) {
+  const area = usable(view);
+  if (page.width <= 0 || page.height <= 0 || area.width <= 0 || area.height <= 0) return 1;
   return clampZoom(Math.min(
-    Math.max(1, view.width - margin * 2) / page.width,
-    Math.max(1, view.height - margin * 2) / page.height,
+    Math.max(1, area.width - margin * 2) / page.width,
+    Math.max(1, area.height - margin * 2) / page.height,
   ));
 }
 
 /** Fit the page and centre it — the state the editor opens in. */
-export function fitViewport(page: Size, view: Size, margin = FIT_MARGIN): Viewport {
+export function fitViewport(page: Size, view: View, margin = FIT_MARGIN): Viewport {
   const zoom = fitZoom(page, view, margin);
+  const area = usable(view);
   return {
     zoom,
-    panX: (view.width - page.width * zoom) / 2,
-    panY: (view.height - page.height * zoom) / 2,
+    panX: (area.width - page.width * zoom) / 2,
+    panY: area.top + (area.height - page.height * zoom) / 2,
   };
 }
 
@@ -84,22 +99,23 @@ export function zoomAt(viewport: Viewport, nextZoom: number, anchor: Point, page
 }
 
 /** Zoom about the middle of the pane, for the +/− buttons and keyboard. */
-export const zoomCentred = (viewport: Viewport, nextZoom: number, page: Size, view: Size) =>
-  zoomAt(viewport, nextZoom, { x: view.width / 2, y: view.height / 2 }, page, view);
+export const zoomCentred = (viewport: Viewport, nextZoom: number, page: Size, view: View) =>
+  zoomAt(viewport, nextZoom, { x: view.width / 2, y: usable(view).top + usable(view).height / 2 }, page, view);
 
 /** Frame a world-space rectangle, in page percentages, with a margin. */
-export function zoomToRect(rect: { x: number; y: number; w: number; h: number }, page: Size, view: Size, margin = FIT_MARGIN): Viewport {
+export function zoomToRect(rect: { x: number; y: number; w: number; h: number }, page: Size, view: View, margin = FIT_MARGIN): Viewport {
+  const area = usable(view);
   const width = Math.max(1, rect.w / 100 * page.width);
   const height = Math.max(1, rect.h / 100 * page.height);
   const zoom = clampZoom(Math.min(
-    Math.max(1, view.width - margin * 2) / width,
-    Math.max(1, view.height - margin * 2) / height,
+    Math.max(1, area.width - margin * 2) / width,
+    Math.max(1, area.height - margin * 2) / height,
   ));
   const centre = { x: (rect.x + rect.w / 2) / 100 * page.width, y: (rect.y + rect.h / 2) / 100 * page.height };
   return clampPan({
     zoom,
-    panX: view.width / 2 - centre.x * zoom,
-    panY: view.height / 2 - centre.y * zoom,
+    panX: area.width / 2 - centre.x * zoom,
+    panY: area.top + area.height / 2 - centre.y * zoom,
   }, page, view);
 }
 

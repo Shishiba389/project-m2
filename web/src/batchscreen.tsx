@@ -45,7 +45,7 @@ export function ImportForkDialog({ summary, onBatch, onEditor }: {
         <button className={`fork-option ${many ? "" : "recommended"}`} onClick={onEditor}>
           <Images aria-hidden="true" />
           <strong>Open the editor</strong>
-          <span>Place each image on its canvas: alignment, safe area, per-image review, then export.</span>
+          <span>Edit one image, then apply that edit to the rest: each is sized on its own product, then reviewed and exported.</span>
           {!many && <em>Suggested for one image</em>}
         </button>
       </div>
@@ -109,7 +109,7 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
 
       {phase.kind === "setup" && <>
         <section className="batch-step">
-          <h2><span>01</span> Source</h2>
+          <h2>Source</h2>
           <div className="source-strip">
             {previews.map((preview) => <figure key={preview.id}>
               <img src={preview.url} alt="" />
@@ -129,7 +129,7 @@ export function BatchScreen({ sources, onLeave }: { sources: BatchSource[]; onLe
         </section>
 
         <section className="batch-step">
-          <h2><span>02</span> Output</h2>
+          <h2>Output</h2>
           <div className="format-chips" role="group" aria-label="Output format">
             {FORMATS.map((format) => <button key={format} className={output.format === format ? "active" : ""}
               onClick={() => setOutput((current) => ({ ...current, format }))}>{format.toUpperCase()}</button>)}

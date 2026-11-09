@@ -4,6 +4,11 @@
 > If that file exists, its rules **override** this Master file.
 > If not, strictly follow the rules below.
 
+> **Superseded palette.** This file is the generator's first proposal (dark, violet and cyan).
+> The shipped app is light, monochrome chrome on a light canvas with one orange selection
+> colour - see `pages/workspace.md`, which overrides everything below. Violet is not used
+> anywhere in the app (2026-11 review with ui-ux-pro-max and design-taste-frontend).
+
 ---
 
 **Project:** MINIMA Resize

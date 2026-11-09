@@ -9,9 +9,14 @@
  */
 
 import { begin } from "@/src/selfcheck";
-import { fullPageImage, type ImageElement } from "@/src/image-geometry";
+import {
+  fullPageImage, layoutBox, pictureAspect,
+  type AlignAxes, type CropRect, type FitMode, type ImageBox, type ImageElement, type PageSize,
+} from "@/src/image-geometry";
+import { croppedBox, rescaleBox } from "@/src/gestures";
+import { bounds, fromBox } from "@/src/mat3";
 import type { FrameElement } from "@/src/frame-geometry";
-import type { LayoutResult } from "@/src/editor-engine";
+import { isWhole, subjectInBox, type Subject } from "@/src/subject";
 
 export type Screen = "import" | "gallery" | "editor" | "review" | "presets" | "settings" | "batch";
 export type Status = "Completed" | "Pending" | "Warning" | "Error";
@@ -94,7 +99,11 @@ function gcd(a: number, b: number): number {
 
 export type Format = "png" | "jpg" | "webp" | "tiff";
 export type Resolution = "large" | "medium" | "small";
-export type WarningReason = "aspect" | "safe";
+/**
+ * Why an image is flagged: it is enlarged past its own pixels, or part of it
+ * falls off the page. Both are measured on the layout the export will use.
+ */
+export type WarningReason = "upscale" | "clipping";
 /** Manual image position inside a crop frame, in percent of the output canvas. */
 export type Asset = {
   id: number;
@@ -107,14 +116,10 @@ export type Asset = {
   url?: string;
   /** Small generated preview; Gallery and filmstrip never decode the original. */
   thumbnailUrl?: string;
-  /** Source pixel dimensions — drives the aspect-mismatch warning. */
+  /** Source pixel dimensions: the picture's aspect, and how far it can be enlarged. */
   src: { w: number; h: number };
-  /** Set once a preset has been applied to this asset. */
+  /** Set once the image has been edited or had an edit applied to it. */
   processed: boolean;
-  /** Content was pushed past the safe area by a Fill/Stretch apply. */
-  overflow: boolean;
-  /** Auto-fix (crop/pad) accepted, so every warning on this asset is resolved. */
-  fixed: boolean;
   /** Unreadable file; never resolvable by re-running the preset. */
   corrupt: boolean;
   /**
@@ -122,13 +127,24 @@ export type Asset = {
    * layer is invisible against the page and needs a locator when selected.
    */
   faint?: boolean;
-  /** Derived batch diagnostic; never used as editable or export geometry. */
-  layout?: LayoutResult;
+  /**
+   * Where the product is in the picture, found at import (§20-21). Null when
+   * the background is not plain enough to tell - the whole picture is then
+   * measured, and nothing claims to know where the product is. Undefined for
+   * an image that was never decoded.
+   */
+  subject?: Subject | null;
   /**
    * The image's canonical editable geometry. The output page never owns this:
    * an element can sit wholly or partly outside the page.
+   *
+   * Null means "laid out by the page": the image has never been placed by
+   * hand, so its box is derived from the page's size, fit and alignment every
+   * time it is read (`elementOf`). That is what keeps fifty untouched imports
+   * correct when the preset changes underneath them - a stored box would be a
+   * stale copy of a layout nobody chose. The first hand edit writes a real box.
    */
-  element: ImageElement;
+  element: ImageElement | null;
   /**
    * Set when this image is a free layer on the shared canvas rather than just
    * the batch item the Gallery lists. The active asset always renders; these
@@ -145,15 +161,16 @@ export function statusOf(asset: Asset, preset: Preset): Status {
   return warningReason(asset, preset) ? "Warning" : "Completed";
 }
 
-/** Why an asset is warned, so Review can explain it and auto-fix can clear it. */
+/**
+ * Why an asset is warned, so Review can explain it and fix it. Measured live
+ * on the layout the export will draw - there is no stored verdict to go stale
+ * when the image or the page changes.
+ */
 export function warningReason(asset: Asset, preset: Preset): WarningReason | null {
-  if (asset.corrupt || !asset.processed || asset.fixed) return null;
-  if (asset.layout) {
-    if (!asset.layout.warnings.length) return null;
-    return asset.layout.warnings.some((warning) => warning.code === "CLIPPING" || warning.code === "SAFE_AREA") ? "safe" : "aspect";
-  }
-  if (mismatch(asset, preset)) return "aspect";
-  if (asset.overflow) return "safe";
+  if (asset.corrupt || !asset.processed) return null;
+  const warnings = validateElement(elementOf(asset, preset), asset.src, preset, asset.subject);
+  if (warnings.some((warning) => warning.code === "CLIPPING")) return "clipping";
+  if (warnings.some((warning) => warning.code === "UPSCALE")) return "upscale";
   return null;
 }
 
@@ -228,7 +245,7 @@ export function outputName(asset: Asset, format: Format, suffix: string, keepNam
  */
 export function mergeImport(
   existing: Asset[],
-  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; thumbnailUrl?: string; corrupt?: boolean; faint?: boolean }[],
+  incoming: { name: string; src?: { w: number; h: number }; file?: File; url?: string; thumbnailUrl?: string; corrupt?: boolean; faint?: boolean; subject?: Subject | null }[],
   policy: DupPolicy,
 ): { assets: Asset[]; added: number; skipped: number; renamed: number } {
   const assets = [...existing];
@@ -249,11 +266,10 @@ export function mergeImport(
       thumbnailUrl: file.thumbnailUrl,
       src: file.src ?? { w: 1801, h: 2600 },
       processed: false,
-      overflow: false,
-      fixed: false,
       corrupt: Boolean(file.corrupt),
       faint: file.faint,
-      element: fullPageImage(),
+      subject: file.subject,
+      element: null,
     };
     const clash = taken.has(file.name);
 
@@ -505,6 +521,143 @@ export function docTarget(doc: Doc, presets: Preset[]): Preset {
   return { ...presetById(doc.presetId, presets), width: doc.width, height: doc.height, safeX: doc.safeX, safeY: doc.safeY, align: doc.align, fit: doc.fit, background: doc.background };
 }
 
+/* ------------------------------------------------------------- page layout
+
+   Fit, Fill and Stretch used to be CSS object-fit applied *inside* a box the
+   size of the page. Now they choose the box itself, measured against the whole
+   page - the white canvas - so the box an image is selected by is the picture
+   the user sees, and pressing Fit on an image that was shrunk into a corner
+   brings it back out to the page. */
+
+type PageRules = Pick<Doc, "width" | "height" | "fit" | "align">;
+
+export const alignAxes = (align: Align): AlignAxes => ({
+  horizontal: align.includes("left") ? "left" : align.includes("right") ? "right" : "center",
+  vertical: align.includes("top") ? "top" : align.includes("bottom") ? "bottom" : "center",
+});
+const alignFrom = (horizontal: AlignAxes["horizontal"], vertical: AlignAxes["vertical"]): Align => {
+  if (vertical === "center") return horizontal === "center" ? "center" : horizontal;
+  return horizontal === "center" ? vertical : `${vertical}-${horizontal}`;
+};
+export const fitModeOf = (fit: Fit): FitMode => fit === "Fit" ? "contain" : fit === "Fill" ? "cover" : "fill";
+
+/** The element the page gives a picture: fitted, filled or stretched to it, at its alignment. */
+export function pageLayout(src: { w: number; h: number }, doc: PageRules, crop: CropRect | null = null,
+  fit: Fit = doc.fit, align: Align = doc.align): ImageElement {
+  return { box: layoutBox(pictureAspect(src, crop), doc, fitModeOf(fit), alignAxes(align)), crop };
+}
+
+/** An asset's geometry: its own once placed by hand, the page's until then. */
+export const elementOf = (asset: Pick<Asset, "element" | "src">, doc: PageRules): ImageElement =>
+  asset.element ?? pageLayout(asset.src, doc);
+
+/**
+ * Lay an element out against the whole page again - the toolbar's Fit, Fill
+ * and Stretch. Whatever size and place it had is replaced. The crop and the
+ * mirrors are the user's and stay; rotation resets, so the result lines up
+ * with the page edges instead of sticking out of them at an angle.
+ */
+export function relayout(element: ImageElement, src: { w: number; h: number }, doc: PageRules, fit: Fit, align: Align = doc.align): ImageElement {
+  const laid = pageLayout(src, doc, element.crop, fit, align);
+  return { crop: element.crop, box: { ...laid.box, flipH: element.box.flipH, flipV: element.box.flipV } };
+}
+
+const close = (left: number, right: number) => Math.abs(left - right) < 1e-6;
+
+/** Which page layout an element is in right now, if any, so the toolbar can light that button. */
+export function layoutMatch(element: ImageElement, src: { w: number; h: number }, doc: PageRules): Fit | null {
+  if (element.box.rotation % 360 !== 0) return null;
+  for (const fit of ["Fit", "Fill", "Stretch"] as const) {
+    const box = pageLayout(src, doc, element.crop, fit).box;
+    if (close(box.x, element.box.x) && close(box.y, element.box.y) && close(box.w, element.box.w) && close(box.h, element.box.h)) return fit;
+  }
+  return null;
+}
+
+/** Move a box so what is visible of it sits at one of nine places on the page. Its size does not change. */
+export function alignOnPage(box: ImageBox, align: Align): ImageBox {
+  const seen = bounds(fromBox(box));
+  const axes = alignAxes(align);
+  const x = axes.horizontal === "left" ? 0 : axes.horizontal === "right" ? 100 - seen.w : (100 - seen.w) / 2;
+  const y = axes.vertical === "top" ? 0 : axes.vertical === "bottom" ? 100 - seen.h : (100 - seen.h) / 2;
+  return { ...box, x: box.x + x - seen.x, y: box.y + y - seen.y };
+}
+
+/** Which of the nine places a box sits at, if it sits at one exactly. */
+export function alignOf(box: ImageBox): Align | null {
+  const seen = bounds(fromBox(box));
+  const horizontal = close(seen.x, 0) ? "left" : close(seen.x + seen.w, 100) ? "right" : close(seen.x + seen.w / 2, 50) ? "center" : null;
+  const vertical = close(seen.y, 0) ? "top" : close(seen.y + seen.h, 100) ? "bottom" : close(seen.y + seen.h / 2, 50) ? "center" : null;
+  return horizontal && vertical ? alignFrom(horizontal, vertical) : null;
+}
+
+/**
+ * Carry the document's stored boxes - placements and frames - onto its new
+ * page size. Untouched assets need nothing: their layout is derived from the
+ * page every time it is read.
+ */
+export function rescaleDoc(doc: Doc, from: PageSize): Doc {
+  const to = { width: doc.width, height: doc.height };
+  if (from.width === to.width && from.height === to.height) return doc;
+  return {
+    ...doc,
+    placements: doc.placements.map((placement) => ({ ...placement, element: { ...placement.element, box: rescaleBox(placement.element.box, from, to) } })),
+    frames: doc.frames.map((frame) => ({ ...frame, box: rescaleBox(frame.box, from, to) })),
+  };
+}
+export const rescaleElement = (element: ImageElement | null, from: PageSize, to: PageSize): ImageElement | null =>
+  element && { ...element, box: rescaleBox(element.box, from, to) };
+
+/* -------------------------------------------------------------- validation */
+
+/** One finding about a layout (§30). `review` means a person should look before export. */
+export type ProcessingWarning = { code: "UPSCALE" | "CLIPPING"; severity: "warning" | "review"; message: string };
+
+/** How far the picture is enlarged past its own pixels: 1 is one source pixel per output pixel. */
+export function enlargement(element: ImageElement, src: { w: number; h: number }, doc: Pick<Doc, "width" | "height">) {
+  const sourceW = src.w * (element.crop ? element.crop.right - element.crop.left : 1);
+  const sourceH = src.h * (element.crop ? element.crop.bottom - element.crop.top : 1);
+  const scale = Math.max(element.box.w / 100 * doc.width / sourceW, element.box.h / 100 * doc.height / sourceH);
+  return Number.isFinite(scale) ? scale : 1;
+}
+
+/**
+ * What the export will do to this picture, checked on the layout itself:
+ * enlarged past its own pixels (§34: over 110% is a warning, over 150% needs
+ * review), or cut off by the page.
+ *
+ * Cut off means the *product*, when it is known: a white margin running off
+ * the page loses nothing, and a Fill that slices the product does. Without a
+ * known product the whole picture is checked, and Fill is let off, since it
+ * overflows the page on purpose.
+ */
+export function validateElement(element: ImageElement, src: { w: number; h: number }, doc: PageRules,
+  subject?: Subject | null): ProcessingWarning[] {
+  const warnings: ProcessingWarning[] = [];
+  const scale = enlargement(element, src, doc);
+  if (scale > 1.1) {
+    warnings.push({ code: "UPSCALE", severity: scale > 1.5 ? "review" : "warning",
+      message: `Enlarged to ${Math.round(scale * 100)}% of its source pixels.` });
+  }
+  const known = Boolean(subject) && !isWhole(subject!.rect);
+  const share = subjectInBox(subject?.rect, element.crop);
+  if (!share) {
+    warnings.push({ code: "CLIPPING", severity: "warning", message: "The crop leaves none of the product showing." });
+    return warnings;
+  }
+  const seen = bounds(fromBox(croppedBox(element.box, share, doc)));
+  const slack = 0.05;
+  const off = seen.x < -slack || seen.y < -slack || seen.x + seen.w > 100 + slack || seen.y + seen.h > 100 + slack;
+  if (off && (known || layoutMatch(element, src, doc) !== "Fill")) {
+    warnings.push({ code: "CLIPPING", severity: "warning",
+      message: known ? "Part of the product is outside the page and will be cut off." : "Part of the image is outside the page and will be cut off." });
+  }
+  return warnings;
+}
+
+/** Placed by hand - the user's own edit, which an apply-all leaves alone unless asked (§38). */
+export const isManual = (asset: Pick<Asset, "element">) => asset.element !== null && asset.element.origin !== "recipe";
+
 /* -------------------------------------------------------------------- scope */
 
 export function scopeAssets(scope: Scope, assets: Asset[], selected: number[], activeId: number) {
@@ -559,21 +712,28 @@ export function demo() {
   const finish = begin();
   const zalando = presetById("zalando");
   const square = presetById("amazon");
-  const base: Asset = { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: false, overflow: false, fixed: false, corrupt: false, element: fullPageImage() };
+  const base: Asset = { id: 1, name: "a.png", kind: "shoe", format: "png", src: { w: 1801, h: 2600 }, processed: false, corrupt: false, element: null };
 
   // Status is derived, never stored.
   console.assert(statusOf(base, zalando) === "Pending", "unprocessed reads Pending");
   console.assert(statusOf({ ...base, processed: true }, zalando) === "Completed", "9:13 source conforms to 9:13 preset");
-  console.assert(statusOf({ ...base, processed: true }, square) === "Warning", "9:13 source mismatches 1:1 preset");
-  console.assert(statusOf({ ...base, processed: true, fixed: true }, square) === "Completed", "auto-fix clears the mismatch");
+  // A different ratio is not a fault any more: Fit pads by design. What is
+  // flagged is what the export would actually do badly.
+  console.assert(statusOf({ ...base, processed: true }, square) === "Completed", "a 9:13 picture fitted to a square page is fine");
   console.assert(statusOf({ ...base, processed: true, corrupt: true }, zalando) === "Error", "corrupt outranks everything");
 
   // Warning reasons drive both the Review copy and the error-type filter.
-  console.assert(warningReason({ ...base, processed: true }, square) === "aspect", "ratio drift reports aspect");
-  console.assert(warningReason({ ...base, processed: true, overflow: true }, zalando) === "safe", "overflow reports safe area");
-  console.assert(warningReason({ ...base, processed: true, overflow: true }, square) === "aspect", "aspect outranks overflow");
+  const small = { ...base, processed: true, src: { w: 900, h: 900 } };
+  console.assert(warningReason(small, zalando) === "upscale", "a small picture blown up past its pixels is flagged");
+  console.assert(validateElement(elementOf(small, zalando), small.src, zalando)[0].severity === "review", "and past 150% it needs review");
+  const offPage = { ...base, processed: true, element: { box: { ...fullPageImage().box, x: -30, w: 50, h: 50 }, crop: null } };
+  console.assert(warningReason(offPage, zalando) === "clipping", "a picture pushed off the page is flagged");
+  const big = { ...base, src: { w: 3602, h: 5200 } };
+  const filled = { ...big, processed: true, element: relayout(elementOf(big, square), big.src, square, "Fill") };
+  console.assert(warningReason(filled, square) === null, "Fill overflows the page on purpose, so it is not flagged");
   console.assert(warningReason(base, square) === null, "an unprocessed asset is not yet warned");
-  console.assert(statusOf({ ...base, processed: true, overflow: true }, zalando) === "Warning", "overflow alone still warns");
+  console.assert(isManual(offPage) && !isManual(base) && !isManual({ element: { ...offPage.element, origin: "recipe" } }),
+    "an image placed by hand is manual; one the page or a recipe placed is not");
 
   console.assert(resolutionOf(base) === "large", "2600px longest edge is large");
   console.assert(resolutionOf({ ...base, src: { w: 1600, h: 1600 } }) === "medium", "1600px is medium");
@@ -589,7 +749,7 @@ export function demo() {
   console.assert(filterAssets(batch, zalando, { ...emptyFilter, formats: ["jpg"] }).length === 1, "format facet narrows");
   console.assert(filterAssets(batch, zalando, { ...emptyFilter, resolutions: ["small"] })[0].id === 2, "resolution facet narrows");
   console.assert(filterAssets(batch, zalando, { ...emptyFilter, errorTypes: ["corrupt"] })[0].id === 3, "error-type facet narrows");
-  console.assert(filterAssets(batch, zalando, { ...emptyFilter, errorTypes: ["aspect"] })[0].id === 2, "aspect facet finds the mismatch");
+  console.assert(filterAssets(batch, zalando, { ...emptyFilter, errorTypes: ["upscale"] })[0].id === 2, "the upscale facet finds the enlarged picture");
   console.assert(filterAssets(batch, zalando, { ...emptyFilter, status: "Pending" }).length === 1, "status facet narrows");
   console.assert(filterAssets(batch, zalando, { ...emptyFilter, query: "b." }).length === 1, "search narrows");
   console.assert(filterAssets(batch, zalando, { ...emptyFilter, formats: ["jpg"], resolutions: ["large"] }).length === 0, "facets combine with AND");

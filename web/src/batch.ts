@@ -16,6 +16,7 @@
 import { begin } from "@/src/selfcheck";
 import { encodeOutput } from "@/src/output-engine";
 import { estimatePeakBytes, resizeRgba, validateDimensions } from "@/src/resize-core";
+import { detectSubject, type Subject } from "@/src/subject";
 
 export type OutFormat = "png" | "jpg" | "webp";
 
@@ -47,6 +48,8 @@ export type BatchSource = {
   thumbnail?: Blob;
   /** Almost nothing of this image is visible against a white page. */
   faint?: boolean;
+  /** Where the product is in the picture; null when no plain background gives it away. */
+  subject?: Subject | null;
 };
 
 // Nothing is resized in this pass, so the default suffix must not claim it was.
@@ -111,6 +114,25 @@ async function faintnessOf(bitmap: ImageBitmap, edge = 32) {
   return isFaint(context.getImageData(0, 0, width, height).data);
 }
 
+/**
+ * Find the product on a copy no larger than `edge` on its long side. Bounds
+ * are fractions, so the copy's size only sets their precision: a twentieth of
+ * a percent of the picture at 1024, under two output pixels on a 2600 page.
+ */
+async function subjectOf(bitmap: ImageBitmap, edge = 1024) {
+  const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(4, Math.round(bitmap.width * scale));
+  const height = Math.max(4, Math.round(bitmap.height * scale));
+  const canvas = typeof OffscreenCanvas !== "undefined"
+    ? new OffscreenCanvas(width, height)
+    : Object.assign(document.createElement("canvas"), { width, height });
+  const context = (canvas as HTMLCanvasElement).getContext("2d", { willReadFrequently: true });
+  if (!context) return null;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(bitmap, 0, 0, width, height);
+  return detectSubject(context.getImageData(0, 0, width, height).data, width, height);
+}
+
 async function thumbnailOf(bitmap: ImageBitmap, maxEdge = 320) {
   const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
@@ -148,7 +170,9 @@ export async function inspectSources(sources: BatchSource[], concurrency = Math.
         try { thumbnail = await thumbnailOf(bitmap); } catch { /* Preview failure must not invalidate a decodable source. */ }
         let faint = false;
         try { faint = await faintnessOf(bitmap); } catch { /* The locator is a hint; failing to sample is not an import error. */ }
-        results[index] = { ...source, width: bitmap.width, height: bitmap.height, thumbnail, faint };
+        let subject: Subject | null = null;
+        try { subject = await subjectOf(bitmap); } catch { /* Without it the whole picture is measured, which is what Level 0 means. */ }
+        results[index] = { ...source, width: bitmap.width, height: bitmap.height, thumbnail, faint, subject };
       } finally { bitmap.close?.(); }
     } catch (error) { results[index] = { ...source, error: (error as Error).message || "could not decode image" }; }
       onProgress(++done, sources.length);
